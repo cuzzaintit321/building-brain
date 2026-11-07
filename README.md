@@ -1,5 +1,7 @@
 # Building Brain — AI-Augmented Property Maintenance MVP
 
+![Building Brain cover](assets/building-brain-cover.png)
+
 **An actual working first release** of the property-specific maintenance knowledge system described in the invention summary and Q1 product roadmap. Source-grounded answers are its default mode. Optional generative AI can synthesize answers from retrieved excerpts, with citations and explicit safety warnings.
 
 > **Private project.** Proprietary source code. Do not publish repository contents or upload confidential building drawings to public services without permission.
