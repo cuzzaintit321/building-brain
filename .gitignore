@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+appdata/
+*.db
+*.sqlite3
+.DS_Store
+
+# Local configuration and backups
+*.bak
+*.backup
+backups/
+*.zip

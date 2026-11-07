@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#101820" />
+  <title>Building Brain — Property Intelligence</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">B<span>·</span>B</span><div><strong>BUILDING BRAIN</strong><small>MAINTENANCE INTELLIGENCE</small></div></div>
+      <div class="nav-kicker">WORKSPACE</div>
+      <nav id="nav" aria-label="Main navigation">
+        <button type="button" data-view="overview" class="active"><span class="nav-icon">▦</span> Overview</button>
+        <button type="button" data-view="ask"><span class="nav-icon">⌕</span> Ask Building Brain</button>
+        <button type="button" data-view="documents"><span class="nav-icon">▤</span> Documents</button>
+        <button type="button" data-view="assets"><span class="nav-icon">◈</span> Equipment registry</button>
+        <button type="button" data-view="notes"><span class="nav-icon">✎</span> Field notes</button>
+        <button type="button" data-view="buildings"><span class="nav-icon">⌂</span> Buildings & templates</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="workspace-status"><span class="status-dot"></span> SINGLE-ORG WORKSPACE</div>
+        <div class="subtle">Private by default · source-backed retrieval</div>
+        <div class="version">BUILDING BRAIN <span>V0.1 · MVP</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title"><span class="eyebrow">OPERATIONS / KNOWLEDGE BASE</span><h1 id="view-title">Operations overview</h1></div>
+        <div class="context-selectors">
+          <label>PROPERTY<select id="property-select" aria-label="Select property"><option value="">No properties</option></select></label>
+          <label>BUILDING<select id="building-select" aria-label="Select building"><option value="">Entire property</option></select></label>
+        </div>
+      </header>
+      <div class="content">
+        <section class="view active" data-panel="overview">
+          <div class="hero"><div><div class="hero-tag"><span class="status-dot"></span> PROPERTY-BOUND KNOWLEDGE</div><h2>Know the building.<br><em>Before you open the panel.</em></h2><p>Turn manuals, schematics, and real field knowledge into answers your team can find in seconds.</p><button type="button" class="primary" data-go="ask">Ask a maintenance question <span>↗</span></button></div><div class="hero-geometry" aria-hidden="true"><div class="blueprint"><span class="bp-1"></span><span class="bp-2"></span><span class="bp-3"></span><span class="bp-4"></span><span class="bp-5"></span><i>INTELLIGENCE / 001</i></div></div></div>
+          <div class="section-label">AT A GLANCE <span id="stats-subtitle">Entire workspace</span></div>
+          <div id="stats" class="stats"></div>
+          <div class="two-col">
+            <article class="panel"><div class="panel-head"><h3>Launch checklist</h3><span class="small-tag">GET STARTED</span></div>
+              <div class="check-step"><b>01</b><div><strong>Create a property & building</strong><p>Set up your actual property and its building names.</p></div><button type="button" data-go="buildings">Open ↗</button></div>
+              <div class="check-step"><b>02</b><div><strong>Upload floor plans or equipment manuals</strong><p>Text PDFs, Word documents, CSV, or text files.</p></div><button type="button" data-go="documents">Open ↗</button></div>
+              <div class="check-step"><b>03</b><div><strong>Search with citations</strong><p>Ask for equipment locations, models, or procedures.</p></div><button type="button" data-go="ask">Open ↗</button></div>
+              <div class="check-step"><b>04</b><div><strong>Capture building-specific changes</strong><p>Review notes before they become searchable knowledge.</p></div><button type="button" data-go="notes">Open ↗</button></div>
+            </article>
+            <article class="panel"><div class="panel-head"><h3>Knowledge rules</h3><span class="small-tag">TRUST LAYER</span></div>
+              <div class="rule"><span>01</span><div><strong>No made-up references</strong><p>Answers link to actual indexed source passages.</p></div></div>
+              <div class="rule"><span>02</span><div><strong>Scope is enforced</strong><p>Queries stay within the selected property.</p></div></div>
+              <div class="rule"><span>03</span><div><strong>Templates are not as-builts</strong><p>Inherited information is clearly marked for on-site verification.</p></div></div>
+              <div class="rule"><span>04</span><div><strong>Changes need review</strong><p>Pending field notes and building exceptions are not used in answers.</p></div></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" data-panel="ask">
+          <div class="section-intro"><div><div class="section-label">ASK THE PROPERTY</div><h2>One question. Document-backed answers.</h2><p>Search the chosen property. Pick a building to include its shared and inherited references.</p></div><span id="mode-badge" class="small-tag">SEARCH MODE</span></div>
+          <div class="ask-panel panel">
+            <form id="ask-form"><label for="question" class="form-label">YOUR MAINTENANCE QUESTION</label><textarea id="question" rows="3" maxlength="500" required placeholder="Where is the isolation valve for Building A?" ></textarea><div class="ask-bottom"><span>Answers are reference guidance, not a substitute for approved safety procedures.</span><button type="submit" class="primary" id="ask-submit">Search references ↗</button></div></form>
+            <div class="suggestions"><span>TRY A QUESTION</span><button type="button" class="suggestion" data-question="Where is the main water isolation valve?">Water shut-off ↗</button><button type="button" class="suggestion" data-question="What equipment model and serial number are installed?">Equipment models ↗</button><button type="button" class="suggestion" data-question="What is the maintenance procedure for the HVAC unit?">HVAC maintenance ↗</button></div>
+          </div>
+          <div id="ask-output" aria-live="polite"></div>
+        </section>
+
+        <section class="view" data-panel="documents">
+          <div class="section-intro"><div><div class="section-label">REFERENCE LIBRARY</div><h2>Upload what your technicians actually use.</h2><p>Index searchable manuals, schedules, as-builts and equipment records. Upload a CAD/BIM PDF export for now.</p></div></div>
+          <div class="two-col ratio-2">
+            <article class="panel"><div class="panel-head"><h3>Add reference material</h3><span class="small-tag">20 MB MAX</span></div>
+              <form id="upload-form" class="stack-form"><label class="form-label" for="upload-file">CHOOSE FILE</label><input type="file" id="upload-file" name="file" required accept=".pdf,.docx,.txt,.md,.csv" /><div class="help">Text-based PDF · DOCX · TXT · MD · CSV. Scanned PDFs need OCR first.</div><label for="upload-scope" class="form-label">REFERENCE APPLIES TO</label><select id="upload-scope"></select><button type="submit" class="primary">Index document ↗</button></form>
+            </article>
+            <article class="panel"><div class="panel-head"><h3>Indexed references</h3><span class="small-tag" id="doc-count">0 DOCUMENTS</span></div><div id="document-list" class="record-list"></div></article>
+          </div>
+        </section>
+
+        <section class="view" data-panel="assets">
+          <div class="section-intro"><div><div class="section-label">EQUIPMENT / SYSTEMS</div><h2>Make every asset searchable.</h2><p>Location, make, model, serial and maintenance notes become citable property records.</p></div></div>
+          <div class="two-col ratio-2">
+            <article class="panel"><div class="panel-head"><h3>Register an asset</h3></div><form class="stack-form" id="asset-form">
+                <label class="form-label" for="asset-building">BUILDING</label><select id="asset-building" required></select>
+                <label class="form-label" for="asset-name">EQUIPMENT NAME</label><input id="asset-name" placeholder="Rooftop unit RTU-3" required maxlength="120" />
+                <div class="input-row"><div><label class="form-label" for="asset-system">SYSTEM</label><input id="asset-system" placeholder="HVAC" maxlength="80" /></div><div><label class="form-label" for="asset-model">MODEL</label><input id="asset-model" placeholder="Manufacturer / model" maxlength="120" /></div></div>
+                <label class="form-label" for="asset-location">ACTUAL LOCATION</label><input id="asset-location" placeholder="Roof, east mechanical curb" maxlength="200" />
+                <label class="form-label" for="asset-serial">SERIAL NUMBER</label><input id="asset-serial" maxlength="120" />
+                <label class="form-label" for="asset-notes">MAINTENANCE NOTES</label><textarea id="asset-notes" rows="3" maxlength="3000" placeholder="Known issues, identification, access restrictions..."></textarea>
+                <label class="form-label" for="asset-warranty">WARRANTY END DATE (OPTIONAL)</label><input id="asset-warranty" type="date" />
+                <button type="submit" class="primary">Save equipment ↗</button>
+              </form></article>
+            <article class="panel"><div class="panel-head"><h3>Asset registry</h3><span class="small-tag" id="asset-count">0 ASSETS</span></div><div id="asset-list" class="record-list"></div></article>
+          </div>
+        </section>
+
+        <section class="view" data-panel="notes">
+          <div class="section-intro"><div><div class="section-label">FIELD KNOWLEDGE / REVIEW</div><h2>Capture what the drawings missed.</h2><p>New notes are pending until approved. Approved field notes become citable search references.</p></div></div>
+          <div class="two-col ratio-2">
+            <article class="panel"><div class="panel-head"><h3>Submit a field note</h3><span class="small-tag">REVIEW REQUIRED</span></div><form class="stack-form" id="note-form">
+              <label for="note-building" class="form-label">BUILDING</label><select id="note-building" required></select>
+              <label for="note-title" class="form-label">SUBJECT</label><input id="note-title" maxlength="150" required placeholder="Isolation valve relocated" />
+              <label for="note-body" class="form-label">OBSERVATION / EVIDENCE</label><textarea id="note-body" required rows="6" maxlength="5000" placeholder="Describe what changed, where it was confirmed and when. Do not enter guesses."></textarea>
+              <label for="note-author" class="form-label">RECORDED BY</label><input id="note-author" maxlength="80" required placeholder="Technician / supervisor" />
+              <button type="submit" class="primary">Submit for review ↗</button></form></article>
+            <article class="panel"><div class="panel-head"><h3>Review queue & history</h3><span class="small-tag">ADMIN REVIEW</span></div><div id="note-list" class="record-list"></div></article>
+          </div>
+        </section>
+
+        <section class="view" data-panel="buildings">
+          <div class="section-intro"><div><div class="section-label">CONFIGURATION / TOPOLOGY</div><h2>One building type. Many buildings.</h2><p>Re-use documentation from a reference building, while recording deviations as exceptions.</p></div></div>
+          <div class="two-col">
+            <article class="panel"><div class="panel-head"><h3>Create property</h3></div><form class="stack-form" id="property-form"><label class="form-label" for="property-name">PROPERTY NAME</label><input id="property-name" required placeholder="Harborview Apartments" maxlength="120" /><label class="form-label" for="property-description">DESCRIPTION (OPTIONAL)</label><textarea id="property-description" rows="2" maxlength="500" placeholder="Residential or commercial portfolio"></textarea><button type="submit" class="primary">Create property ↗</button></form></article>
+            <article class="panel"><div class="panel-head"><h3>Add building</h3></div><form class="stack-form" id="building-form"><label class="form-label" for="building-name">BUILDING NAME</label><input id="building-name" required placeholder="Building B" maxlength="120" /><label class="form-label" for="building-template">INHERIT A BUILDING TEMPLATE</label><select id="building-template"></select><div class="help">Select an existing building only when its drawings/layout genuinely apply. Differences belong in exceptions.</div><button type="submit" class="primary">Add building ↗</button></form></article>
+          </div>
+          <article class="panel full-panel"><div class="panel-head"><h3>Building inventory</h3></div><div id="building-list" class="building-list"></div></article>
+          <div class="two-col ratio-2">
+            <article class="panel"><div class="panel-head"><h3>Record building exception</h3><span class="small-tag">PENDING REVIEW</span></div><form class="stack-form" id="exception-form">
+                <label class="form-label" for="exception-building">BUILDING</label><select id="exception-building" required></select>
+                <label class="form-label" for="exception-label">EXCEPTION TITLE</label><input id="exception-label" required maxlength="150" placeholder="Unit 302 hot water line rerouted" />
+                <label class="form-label" for="exception-details">WHAT DIFFERS FROM THE TEMPLATE</label><textarea id="exception-details" required rows="5" maxlength="5000" placeholder="Document verified changes and evidence..."></textarea>
+                <label class="form-label" for="exception-author">RECORDED BY</label><input id="exception-author" required maxlength="80" placeholder="Technician / supervisor" />
+                <button type="submit" class="primary">Submit exception ↗</button></form></article>
+            <article class="panel"><div class="panel-head"><h3>Building exceptions</h3></div><div id="exception-list" class="record-list"></div></article>
+          </div>
+        </section>
+      </div>
+      <footer>BUILDING BRAIN <span>Source-backed, not a replacement for qualified field verification.</span></footer>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script defer src="/static/app.js"></script>
+</body>
+</html>
