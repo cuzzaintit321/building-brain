@@ -16,13 +16,18 @@
 | Document Q&A | SQLite FTS5 retrieval, source excerpts, filename + PDF page citations, missing-info feedback |
 | Optional AI synthesis | Set `AI_PROVIDER=ollama` or `AI_PROVIDER=openai` (OFF by default) |
 | Equipment registry | Search equipment names, locations, system, model, serial, warranty notes |
+| **FacilityGuard** | Integrated work orders, recurring preventive maintenance, inspections with corrective follow-ups, property dashboard and CSV export at `/facilityguard` |
 | Field notes | New notes start `pending`, become searchable only after review/approval |
 | Building exceptions | Approved building-specific deviations rank ahead of inherited templates |
 | Mobile-friendly interface | Responsive, browser-based dashboard; no frontend compilation |
 | Basic authentication | Required password on every route except health check, intended for one trusted organization |
 | Deployment | Docker Compose, SQLite persistent named volume, loopback-only binding on port `8124` |
 
-**Not yet built:** OCR for scans, native DWG/Revit/IFC parsing, actual diagram/topology interpretation, mobile camera overlays, photo uploads, technician role/permission separation, CMMS integration, parts recognition, PM scheduling, sensor feeds, SSO, SOC 2 controls, source versioning, automatic field verification, and offline mobile caching. An inherited building template is **not proof of a specific building's installed configuration**.
+**Not yet built:** OCR for scans, native DWG/Revit/IFC parsing, actual diagram/topology interpretation, mobile camera overlays, photo uploads, technician role/permission separation, CMMS integration, parts recognition, sensor feeds, SSO, SOC 2 controls, source versioning, automatic field verification, and offline mobile caching. An inherited building template is **not proof of a specific building's installed configuration**.
+
+## FacilityGuard operations module
+
+Open **FacilityGuard** from the Building Brain navigation (or `/facilityguard`). Work orders, recurring PM schedules and inspection records share the existing property/building/equipment registry. A failed inspection can create a corrective work order. Due work, overdue counts, inspection findings, and a property-level CSV report are included. The existing SQLite database is upgraded with additive tables on application startup; **back up the persistent database before deploying**. See [FACILITYGUARD.md](FACILITYGUARD.md) for endpoints, limitations and deployment guidance. This remains a single-organization MVP, not a regulatory compliance certification or audited commercial CMMS.
 
 ## Run it on your Ubuntu server (Docker Compose)
 

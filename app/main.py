@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from .ai import ask_llm
+from .facilityguard import router as facilityguard_router, initialize_facilityguard
 from .db import connect, db, ensure_building, ensure_property, initialize, one, remove_chunks, rowdict, database_path
 from .ingest import IngestError, MAX_BYTES, SUPPORTED, chunks, extract
 from .search import search
@@ -25,6 +26,7 @@ async def lifespan(app):
     if len(password)<12 or password=='replace-with-long-random-password':
         raise RuntimeError('Set a unique APP_PASSWORD of at least 12 characters (see .env.example).')
     initialize()
+    initialize_facilityguard()
     yield
 
 app=FastAPI(title='Building Brain',version='0.1.0',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
@@ -47,6 +49,11 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 app.mount('/static',StaticFiles(directory=BASE/'static'),name='static')
+app.include_router(facilityguard_router)
+
+@app.get('/facilityguard')
+def facilityguard_page():
+    return FileResponse(BASE/'static'/'facilityguard.html')
 
 class PropertyIn(BaseModel):
     name:str=Field(min_length=2,max_length=120)
