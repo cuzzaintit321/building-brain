@@ -1,3 +1,5 @@
+![Building Brain](assets/cover.png)
+
 # Building Brain 2.0
 
 A mobile-first, self-hosted maintenance workspace: properties, assets, work orders, preventive maintenance, field notes/photos, document indexing, and a document-grounded assistant.
