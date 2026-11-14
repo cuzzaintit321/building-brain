@@ -84,6 +84,7 @@ def properties(uid:int=Depends(identity)):
 def records(pid:int,kind:str,uid:int=Depends(identity)):
     with db() as c:
         access(c,uid,pid)
+        if kind=='documents': return [dict(r) for r in c.execute('SELECT id,filename,pages FROM documents WHERE property_id=?',(pid,))]
         if kind=='assets': return [dict(r) for r in c.execute('SELECT * FROM assets WHERE property_id=? ORDER BY name',(pid,))]
         tables={'work-orders':'fg_work_orders','pm-plans':'fg_pm_plans','inspections':'fg_inspections'}
         if kind not in tables: raise HTTPException(404,'Unknown resource')
@@ -98,3 +99,10 @@ def update(pid:int,rid:int,item:Status,uid:int=Depends(identity)):
         if result.rowcount!=1: raise HTTPException(409,'Record changed or unavailable; refresh')
         c.execute('INSERT INTO mobile_audit(user_id,property_id,action,record_id) VALUES(?,?,?,?)',(uid,pid,item.status,rid))
     return {'ok':True}
+
+@router.get('/properties/{pid}/assets/{rid}/label')
+def label(pid:int,rid:int,uid:int=Depends(identity)):
+    with db() as c:
+        access(c,uid,pid)
+        if not one(c,'SELECT id FROM assets WHERE property_id=? AND id=?',(pid,rid)): raise HTTPException(404,'Asset not found')
+    return {'payload':f'buildingbrain:asset:{rid}'}
