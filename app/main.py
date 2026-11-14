@@ -50,6 +50,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse({'detail':'Authentication required'},status_code=401,headers={'WWW-Authenticate':'Basic realm="Building Brain"'})
         return await call_next(request)
 
+app.add_middleware(BasicAuthMiddleware)
 app.mount('/static',StaticFiles(directory=BASE/'static'),name='static')
 app.include_router(facilityguard_router)
 app.include_router(mobile_router)
