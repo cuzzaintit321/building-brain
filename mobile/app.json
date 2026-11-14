@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Building Brain",
+    "slug": "building-brain",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "android": {
+      "package": "com.buildingbrain.mobile"
+    },
+    "ios": {
+      "bundleIdentifier": "com.buildingbrain.mobile"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Building Brain to scan equipment QR labels.",
+          "recordAudioAndroid": false
+        }
+      ],
+      "expo-secure-store"
+    ]
+  }
+}
