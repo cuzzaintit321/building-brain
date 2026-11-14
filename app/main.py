@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from .ai import ask_llm
+from .mobile_api import router as mobile_router, initialize_mobile
 from .facilityguard import router as facilityguard_router, initialize_facilityguard
 from .db import connect, db, ensure_building, ensure_property, initialize, one, remove_chunks, rowdict, database_path
 from .ingest import IngestError, MAX_BYTES, SUPPORTED, chunks, extract
@@ -27,13 +28,14 @@ async def lifespan(app):
         raise RuntimeError('Set a unique APP_PASSWORD of at least 12 characters (see .env.example).')
     initialize()
     initialize_facilityguard()
+    initialize_mobile()
     yield
 
 app=FastAPI(title='Building Brain',version='0.1.0',lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self,request,call_next):
-        if request.url.path == '/healthz':
+        if request.url.path == '/healthz' or request.url.path == '/api/mobile/login' or (request.url.path.startswith('/api/mobile/') and not request.url.path.startswith('/api/mobile/admin/')):
             return await call_next(request)
         raw=request.headers.get('authorization','')
         allowed=False
@@ -50,6 +52,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
 app.mount('/static',StaticFiles(directory=BASE/'static'),name='static')
 app.include_router(facilityguard_router)
+app.include_router(mobile_router)
 
 @app.get('/facilityguard')
 def facilityguard_page():
