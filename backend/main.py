@@ -318,11 +318,11 @@ def property_knowledge_sources(pid,question,asset=None):
         elif model and not mentions_model(question,k['model']):
             # Do not assume a model based on brand alone.
             continue
-        elif not model and not (tokens(k['brand']) & terms):
+        elif not model and not mentions_model(question,k['brand']):
             continue
         content=f"{k['kind']} | {k['brand']} {k['model']} | {k['category']} | {k['title']}: {k['content']}"
         score=len(tokens(content)&terms)
-        if not score and not (asset and model):continue
+        if not score and not (asset and model) and not mentions_model(question,k['brand']):continue
         excerpts=snippets(k['content'],terms,limit=2) or [k['content'][:700]]
         excerpt=f"{k['brand']} {k['model']} ({k['category'] or 'category unspecified'}); {k['kind']}: {k['title']}. "+' '.join(excerpts)+f" | Recorded source: {k['source'][:400]}"
         results.append({'type':'knowledge','id':k['id'],'label':k['title'],'excerpt':excerpt,'score':score+(12 if model else 3)})
@@ -338,15 +338,15 @@ async def ask(x:Question):
     selected=None
     if x.asset_id is not None:
         asset_exists(x.asset_id,x.property_id)
-        selected=row('SELECT * FROM assets WHERE id=?',(x.asset_id,))
+        selected=row('SELECT * FROM assets WHERE id=? AND property_id=?',(x.asset_id,x.property_id))
+        if not selected:raise HTTPException(400,'Asset does not belong to selected property')
     found=property_knowledge_sources(x.property_id,x.question,selected)
     if selected:
         found.append({'type':'asset','id':selected['id'],'label':selected['name'],'excerpt':f"Selected equipment: {selected['name']}; Category: {selected['category']}; Manufacturer: {selected['manufacturer']}; Model: {selected['model']}; Location: {selected['location']}; Notes: {selected['notes']}",'score':100})
     for doc in rows('SELECT id,name,content FROM documents WHERE property_id=?',(x.property_id,)):
         for snip in snippets(doc['content'],terms):found.append({'type':'document','id':doc['id'],'label':doc['name'],'excerpt':snip,'score':len(tokens(snip)&terms)})
     for asset in rows('SELECT * FROM assets WHERE property_id=?',(x.property_id,)):
-        if selected and asset['id']!=selected['id']:continue
-        if selected and asset['id']==selected['id']:continue
+        if selected:continue
         content=f"Asset: {asset['name']}; Category: {asset['category']}; Location: {asset['location']}; Manufacturer: {asset['manufacturer']}; Model: {asset['model']}; Serial: {asset['serial']}; Notes: {asset['notes']}"
         score=len(tokens(content)&terms)
         if score:found.append({'type':'asset','id':asset['id'],'label':asset['name'],'excerpt':content,'score':score})
@@ -354,7 +354,7 @@ async def ask(x:Question):
         if selected and note['asset_id']!=selected['id']:continue
         score=len(tokens(note['text'])&terms)
         if score:found.append({'type':'note','id':note['id'],'label':f"Technician note #{note['id']}",'excerpt':note['text'][:700],'score':score})
-    for order in rows("SELECT o.*,a.name asset_name,a.manufacturer,a.model FROM orders o LEFT JOIN assets a ON o.asset_id=a.id WHERE o.property_id=? AND o.status='Completed' AND TRIM(o.resolution)!=''",(x.property_id,)):
+    for order in rows("SELECT o.*,a.name asset_name,a.manufacturer,a.model FROM orders o LEFT JOIN assets a ON o.asset_id=a.id AND o.property_id=a.property_id WHERE o.property_id=? AND o.status='Completed' AND TRIM(o.resolution)!=''",(x.property_id,)):
         if selected and order['asset_id']!=selected['id']:continue
         content=f"Completed repair: {order['title']}; Equipment: {order['asset_name'] or 'Unassigned'} {order['manufacturer'] or ''} {order['model'] or ''}; Resolution: {order['resolution']}; Completed: {order['completed_at']}"
         score=len(tokens(content)&terms)
@@ -371,5 +371,5 @@ async def ask(x:Question):
                 answer='\n'.join(c.get('text','') for item in out.get('output',[]) for c in item.get('content',[]) if c.get('type')=='output_text')
                 if answer:return {'answer':answer,'sources':found,'mode':'ai'}
         except Exception:pass
-    answer='Relevant records found (source excerpts; AI synthesis unavailable):\n\n'+'\n\n'.join(f"[{i+1}] {s['label']}: {s['excerpt']}" for i,s in enumerate(found[:3]))+'\n\nVerify these details against current building records before taking action.'
+    answer='Relevant records found (source excerpts; AI synthesis unavailable):\n\n'+'\n\n'.join(f"[{i+1}] {s['label']}: {s['excerpt']}" for i,s in enumerate(found[:5]))+'\n\nVerify these details against current building records before taking action.'
     return {'answer':answer,'sources':found,'mode':'evidence'}
