@@ -54,6 +54,10 @@ def init():
         CREATE INDEX IF NOT EXISTS idx_orders_property ON orders(property_id);
         CREATE INDEX IF NOT EXISTS idx_assets_property ON assets(property_id);
         ''')
+        columns={r['name'] for r in c.execute('PRAGMA table_info(properties)')}
+        for name, definition in [('latitude','REAL'),('longitude','REAL'),('geofence_radius','INTEGER NOT NULL DEFAULT 100')]:
+            if name not in columns:
+                c.execute(f'ALTER TABLE properties ADD COLUMN {name} {definition}')
         if c.execute('SELECT COUNT(*) FROM properties').fetchone()[0]==0:
             c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',('Demo Property','Sample property — replace with your own','Demonstration records only. No equipment locations or safety procedures are verified.'))
             pid=c.execute('SELECT last_insert_rowid()').fetchone()[0]
@@ -99,6 +103,20 @@ def properties():return rows('SELECT * FROM properties ORDER BY name')
 def create_property(x:Property):
     with db() as c:
         r=c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',(x.name,x.address,x.notes));return {'id':r.lastrowid}
+
+class PropertyLocation(BaseModel):
+    latitude:Optional[float]=Field(default=None,ge=-90,le=90,allow_inf_nan=False)
+    longitude:Optional[float]=Field(default=None,ge=-180,le=180,allow_inf_nan=False)
+    geofence_radius:int=Field(default=100,ge=25,le=2000)
+
+@app.put('/api/properties/{pid}/location',dependencies=[Depends(auth)])
+def set_property_location(pid:int,x:PropertyLocation):
+    property_exists(pid)
+    if (x.latitude is None)!=(x.longitude is None):
+        raise HTTPException(422,'Provide both coordinates or clear both')
+    with db() as c:
+        c.execute('UPDATE properties SET latitude=?,longitude=?,geofence_radius=? WHERE id=?',(x.latitude,x.longitude,x.geofence_radius,pid))
+    return {'ok':True}
 
 class Asset(BaseModel):property_id:int;name:str=Field(min_length=1,max_length=180);category:str='';location:str='';manufacturer:str='';model:str='';serial:str='';status:str='Operational';notes:str='';warranty_expires:str=''
 @app.get('/api/assets',dependencies=[Depends(auth)])

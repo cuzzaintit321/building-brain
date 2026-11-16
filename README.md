@@ -63,3 +63,11 @@ tar czf building-brain-data-backup.tar.gz data/
 - PM templates, analytics, asset-history timeline, alerts
 - Object storage and multi-tenant PostgreSQL SaaS deployment
 
+
+## Property GPS recognition
+
+Use **Property GPS settings** in the sidebar (or mobile More menu) to save the property's center latitude, longitude and geofence radius (25–2000 meters). You can use your device's current location to populate the center, or enter coordinates manually. Existing property records are migrated automatically without adding fake coordinates.
+
+Select **Detect property** to find the matching property. A single high-confidence match switches to its overview; overlapping or uncertain matches require confirmation. Inaccurate or out-of-range locations never switch properties. Enable automatic detection on sign-in/opening the app in GPS settings if desired; the preference stays on the current browser. Browser geolocation requires HTTPS, user permission and a compatible device. Indoor GPS and circular boundaries are approximate, so manually confirm questionable results. No continuous tracking, location history, external geocoding, or live technician location upload is implemented. Only explicitly saved property centers are sent to the backend. The separate legacy `app/` implementation is unchanged; Docker uses `backend/main.py` and `static/`.
+
+Run the location matching unit tests with `node --test tests/test_geolocation.cjs`.
