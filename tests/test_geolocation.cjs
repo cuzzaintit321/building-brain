@@ -1,0 +1,11 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {rankProperties}=require('../static/geolocation.js');
+const a={id:1,name:'A',latitude:28.6,longitude:-80.8,geofence_radius:100};
+test('unique confident property',()=>assert.equal(rankProperties([a],28.6,-80.8,10).status,'confident'));
+test('overlapping property boundaries require confirmation',()=>assert.equal(rankProperties([a,{...a,id:2,latitude:28.6005}],28.6,-80.8,10).status,'ambiguous'));
+test('outside all boundaries',()=>assert.equal(rankProperties([a],28.7,-80.8,10).status,'outside'));
+test('low accuracy does not match',()=>assert.equal(rankProperties([a],28.6,-80.8,300).status,'inaccurate'));
+test('unconfigured properties are excluded',()=>assert.equal(rankProperties([{...a,latitude:null,longitude:null}],0,0,10).status,'outside'));
+test('uncertainty crossing boundary requires confirmation',()=>assert.equal(rankProperties([a],28.6,-80.8,120).status,'ambiguous'));
+test('distance across antimeridian',()=>assert.equal(rankProperties([{...a,latitude:0,longitude:179.9999}],0,-179.9999,5).status,'confident'));

@@ -7,8 +7,8 @@ const json=(method,data)=>({method,headers:{'Content-Type':'application/json'},b
 function toast(s){$('#toast').textContent=s;$('#toast').classList.remove('hidden');setTimeout(()=>$('#toast').classList.add('hidden'),3000)}
 function showLogin(){$('#login').classList.remove('hidden');$('#app').classList.add('hidden')}
 function showApp(){$('#login').classList.add('hidden');$('#app').classList.remove('hidden')}
-async function start(){try{let s=await api('/session');if(s.authenticated){showApp();await refresh()}else showLogin()}catch(e){showLogin()}}
-$('#login-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('/login',json('POST',{password:$('#password').value}));$('#password').value='';$('#login-error').textContent='';showApp();await refresh()}catch(err){$('#login-error').textContent=err.message}});
+async function start(){try{let s=await api('/session');if(s.authenticated){showApp();await refresh();autoLocate()}else showLogin()}catch(e){showLogin()}}
+$('#login-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('/login',json('POST',{password:$('#password').value}));$('#password').value='';$('#login-error').textContent='';showApp();await refresh();autoLocate()}catch(err){$('#login-error').textContent=err.message}});
 $('#logout').onclick=async()=>{await api('/logout',{method:'POST'});showLogin()};
 async function refresh(){state.properties=await api('/properties');if(!state.properties.some(p=>p.id===state.property))state.property=state.properties[0]?.id||null;renderProperties();await loadData();render()}
 function renderProperties(){const p=$('#property');p.innerHTML=state.properties.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('');p.value=state.property;$('#property-label').textContent=state.properties.find(x=>x.id===state.property)?.name||'No property'}
@@ -16,7 +16,7 @@ $('#property').addEventListener('change',async e=>{state.property=Number(e.targe
 async function loadData(){if(!state.property)return;const id=state.property;const [assets,orders,pm,docs,notes,dashboard]=await Promise.all(['/assets','/orders','/pm','/documents','/notes','/dashboard'].map(p=>api(p+'?property_id='+id)));Object.assign(state,{assets,orders,pm,docs,notes,dashboard})}
 function nav(tab){state.tab=tab;$$('[data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));render();window.scrollTo({top:0,behavior:'instant'})}
 $$('[data-tab]').forEach(x=>x.addEventListener('click',()=>nav(x.dataset.tab)));
-$('#mobile-more').onclick=()=>{modal('More tools',`<div class="row-list">${[['pm','Preventive Care'],['documents','Documents'],['notes','Field Notes']].map(([t,n])=>`<button class="btn full" data-go="${t}">${n}</button>`).join('')}<button class="btn full" id="change-property">Change property</button><button class="btn full" id="mobile-logout">Sign out</button></div>`);$$('[data-go]').forEach(b=>b.onclick=()=>{closeModal();nav(b.dataset.go)});$('#mobile-logout').onclick=async()=>{closeModal();await api('/logout',{method:'POST'});showLogin()};$('#change-property').onclick=()=>{closeModal();modal('Select property',`<div class="row-list">${state.properties.map(p=>`<button class="btn" data-pid="${p.id}">${esc(p.name)}</button>`).join('')}<button class="btn primary" id="mobile-add-property">+ Add property</button></div>`);$$('[data-pid]').forEach(b=>b.onclick=async()=>{state.property=Number(b.dataset.pid);closeModal();renderProperties();await loadData();render()});$('#mobile-add-property').onclick=()=>{closeModal();newProperty()}};};
+$('#mobile-more').onclick=()=>{modal('More tools',`<div class="row-list">${[['pm','Preventive Care'],['documents','Documents'],['notes','Field Notes']].map(([t,n])=>`<button class="btn full" data-go="${t}">${n}</button>`).join('')}<button class="btn full" id="mobile-locate">◎ Detect property</button><button class="btn full" id="mobile-location-settings">Property GPS settings</button><button class="btn full" id="change-property">Change property</button><button class="btn full" id="mobile-logout">Sign out</button></div>`);$$('[data-go]').forEach(b=>b.onclick=()=>{closeModal();nav(b.dataset.go)});$('#mobile-locate').onclick=()=>{closeModal();detectProperty()};$('#mobile-location-settings').onclick=()=>{closeModal();propertyLocation()};$('#mobile-logout').onclick=async()=>{closeModal();await api('/logout',{method:'POST'});showLogin()};$('#change-property').onclick=()=>{closeModal();modal('Select property',`<div class="row-list">${state.properties.map(p=>`<button class="btn" data-pid="${p.id}">${esc(p.name)}</button>`).join('')}<button class="btn primary" id="mobile-add-property">+ Add property</button></div>`);$$('[data-pid]').forEach(b=>b.onclick=async()=>{state.property=Number(b.dataset.pid);closeModal();renderProperties();await loadData();render()});$('#mobile-add-property').onclick=()=>{closeModal();newProperty()}};};
 function render(){const title=tabNames[state.tab];$('#title').textContent=title;$('#crumb').textContent=title.toUpperCase();$('#content').innerHTML=state.property?views[state.tab]():`<section class="panel"><h3>Create your first property</h3><p>No property exists yet.</p><button class="btn primary" id="create-first">Add property</button></section>`;wire();}
 const tag=s=>`<span class="tag ${esc(String(s).replaceAll(' ','-'))}">${esc(s)}</span>`;
 const blank=(title,text)=>`<div class="empty"><strong>${esc(title)}</strong>${esc(text)}</div>`;
@@ -37,6 +37,59 @@ const assetChoices=(selected)=>choose('Equipment','asset_id',[['','No specific e
 function form(title,content,onSubmit){modal(title,`<form id="edit-form"><div class="form-grid">${content}</div><div class="form-actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></form>`);$('#cancel').onclick=closeModal;$('#edit-form').onsubmit=async e=>{e.preventDefault();const b=$('#edit-form button[type=submit]');b.disabled=true;try{const values=Object.fromEntries(new FormData(e.currentTarget).entries());await onSubmit(values);closeModal();await loadData();render();toast('Saved successfully')}catch(err){toast(err.message);b.disabled=false}}}
 function newProperty(){form('Add property',field('Property name','name')+field('Address','address','', 'text',true)+field('Notes','notes','','textarea',true),async v=>{const r=await api('/properties',json('POST',v));state.property=r.id;state.properties=await api('/properties');renderProperties()})}
 $('#add-property').onclick=newProperty;
+
+const gpsPreference='bb-auto-locate';
+function autoEnabled(){try{return localStorage.getItem(gpsPreference)==='1'}catch{return false}}
+function setAutoEnabled(on){try{localStorage.setItem(gpsPreference,on?'1':'0')}catch{toast('Could not save this browser preference')}}
+function readGPS(){
+  if(!window.isSecureContext||!navigator.geolocation)return Promise.reject(new Error('Location requires HTTPS and a supported browser.'));
+  return new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(
+    pos=>resolve(pos.coords),
+    err=>reject(new Error(err.code===1?'Location permission was denied. Select your property manually.':err.code===3?'Location timed out. Try again outdoors.':'Location unavailable. Try again or select manually.')),
+    {enableHighAccuracy:true,timeout:12000,maximumAge:0}
+  ));
+}
+async function switchProperty(id){
+  if(!state.properties.some(p=>p.id===id))return;
+  state.property=id;renderProperties();await loadData();nav('dashboard');
+}
+let locating=false;
+async function detectProperty(automatic=false){
+  if(locating)return;
+  if(!state.properties.some(p=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude))){
+    if(!automatic)toast('Set GPS coordinates for at least one property first.');return;
+  }
+  locating=true;const original=state.property, tab=state.tab;
+  try{
+    const coords=await readGPS();
+    if($('#app').classList.contains('hidden')||state.property!==original||state.tab!==tab||!$('#modal').classList.contains('hidden'))return;
+    const result=BBLocation.rankProperties(state.properties,coords.latitude,coords.longitude,coords.accuracy);
+    if(result.status==='inaccurate'){toast('GPS accuracy is too low. Try outdoors or select a property manually.');return}
+    if(result.status==='outside'){toast('No registered property matches this location.');return}
+    if(result.status==='confident'){
+      await switchProperty(result.candidates[0].id);
+      toast('Property detected: '+result.candidates[0].name);return;
+    }
+    modal('Confirm your property', '<p class="hint">GPS accuracy: '+Math.round(coords.accuracy)+' m. More than one property may match, or your location is near a boundary. Confirm before continuing.</p><div class="row-list">'+result.candidates.map(p=>'<button class="btn full" data-gps-property="'+p.id+'">'+esc(p.name)+' · '+Math.round(p.distance)+' m from center</button>').join('')+'</div>');
+    $('[data-gps-property]').forEach(b=>b.onclick=async()=>{closeModal();try{await switchProperty(Number(b.dataset.gpsProperty))}catch(e){toast(e.message)}});
+  }catch(e){if(!automatic||!$('#app').classList.contains('hidden'))toast(e.message)}
+  finally{locating=false}
+}
+function autoLocate(){if(autoEnabled())detectProperty(true)}
+function propertyLocation(){
+  const p=state.properties.find(x=>x.id===state.property);
+  if(!p){toast('Create a property first.');return}
+  modal('Property GPS settings','<p class="hint">Set a center point and radius for '+esc(p.name)+'. For large or irregular properties, use a representative center and confirm matches manually.</p><form id="gps-form"><div class="form-grid">'+field('Latitude','latitude',p.latitude??'','number')+field('Longitude','longitude',p.longitude??'','number')+field('Radius (meters, 25–2000)','geofence_radius',p.geofence_radius??100,'number',true)+'</div><button type="button" class="btn full" id="gps-here">◎ Use my current location as property center</button><p class="hint" id="gps-status">Technician location checks stay in this browser. Only saved property centers are stored on the server.</p><label><input type="checkbox" id="gps-auto" '+(autoEnabled()?'checked':'')+'> Automatically detect property when opening Building Brain on this device</label><div class="form-actions"><button type="button" class="btn" id="gps-clear">Clear coordinates</button><button class="btn primary" type="submit">Save GPS settings</button></div></form>');
+  $('#f-latitude').step='any';$('#f-latitude').min='-90';$('#f-latitude').max='90';
+  $('#f-longitude').step='any';$('#f-longitude').min='-180';$('#f-longitude').max='180';
+  $('#f-geofence_radius').min='25';$('#f-geofence_radius').max='2000';$('#f-geofence_radius').required=true;
+  $('#gps-auto').onchange=e=>setAutoEnabled(e.target.checked);
+  $('#gps-clear').onclick=()=>{$('#f-latitude').value='';$('#f-longitude').value='';$('#gps-status').textContent='Save to remove this property from GPS matching.'};
+  $('#gps-here').onclick=async()=>{const b=$('#gps-here');b.disabled=true;try{const c=await readGPS();if(!Number.isFinite(c.accuracy)||c.accuracy>100)throw Error('Location is too imprecise to save a property center. Try outdoors.');if(!b.isConnected)return;$('#f-latitude').value=c.latitude.toFixed(6);$('#f-longitude').value=c.longitude.toFixed(6);$('#gps-status').textContent='GPS accuracy: '+Math.round(c.accuracy)+' m. Verify this is a suitable property center.'}catch(e){if(b.isConnected)$('#gps-status').textContent=e.message}finally{b.disabled=false}};
+  $('#gps-form').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,b=f.querySelector('button[type=submit]');b.disabled=true;const v=Object.fromEntries(new FormData(f));try{await api('/properties/'+p.id+'/location',json('PUT',{latitude:v.latitude===''?null:Number(v.latitude),longitude:v.longitude===''?null:Number(v.longitude),geofence_radius:Number(v.geofence_radius)}));state.properties=await api('/properties');renderProperties();if(f.isConnected)closeModal();toast('Property GPS settings saved')}catch(err){toast(err.message);b.disabled=false}};
+}
+$('#locate-property').onclick=()=>detectProperty();
+$('#property-location').onclick=propertyLocation;
 function editOrder(o){const data=o||{};form(o?'Edit work order':'New work order',field('Title','title',data.title)+assetChoices(data.asset_id)+choose('Priority','priority',['Low','Normal','High','Urgent'].map(x=>[x,x]),data.priority||'Normal')+choose('Status','status',['Open','In Progress','Completed'].map(x=>[x,x]),data.status||'Open')+field('Assigned to','assignee',data.assignee)+field('Due date','due_date',data.due_date,'date')+field('Description','description',data.description,'textarea',true)+field('Resolution / completion notes','resolution',data.resolution,'textarea',true),async v=>api(o?'/orders/'+o.id:'/orders',json(o?'PUT':'POST',{...v,property_id:state.property,asset_id:v.asset_id?Number(v.asset_id):null}))) }
 function editAsset(a){const d=a||{};form(a?'Edit equipment':'Add equipment',field('Equipment name','name',d.name)+field('Category','category',d.category)+field('Location','location',d.location)+choose('Status','status',['Operational','Needs Service','Out of Service'].map(x=>[x,x]),d.status||'Operational')+field('Manufacturer','manufacturer',d.manufacturer)+field('Model','model',d.model)+field('Serial number','serial',d.serial)+field('Warranty expiration','warranty_expires',d.warranty_expires,'date')+field('Notes','notes',d.notes,'textarea',true),async v=>api(a?'/assets/'+a.id:'/assets',json(a?'PUT':'POST',{...v,property_id:state.property}))) }
 function newPM(){form('Schedule maintenance',field('Task name','title')+assetChoices()+field('Interval (days)','interval_days','30','number')+field('Next due','next_due',new Date().toISOString().slice(0,10),'date')+field('Checklist (one per line)','checklist','','textarea',true),async v=>api('/pm',json('POST',{...v,property_id:state.property,asset_id:v.asset_id?Number(v.asset_id):null,interval_days:Number(v.interval_days)})))}
