@@ -63,3 +63,10 @@ def test_completed_repairs(brain):
     aid=brain.post('/api/assets',json={'property_id':p,'name':'Washer','manufacturer':'ExampleBrand','model':'ABC-123'}).json()['id']
     assert brain.post('/api/orders',json={'property_id':p,'asset_id':aid,'title':'E25 incident','status':'Completed','resolution':'Documented resolution for E25'}).status_code==200
     assert any(s['type']=='repair' for s in ask(brain,p,'E25',aid).json()['sources'])
+
+def test_short_brand_names(brain):
+    p=new_property(brain,'A')
+    assert lesson(brain,p,brand='GE',model='',title='GE brand overview').status_code==201
+    assert lesson(brain,p,brand='LG',model='',title='LG brand overview').status_code==201
+    sources=ask(brain,p,'GE E25').json()['sources']
+    assert [s['label'] for s in sources if s['type']=='knowledge']==['GE brand overview']
