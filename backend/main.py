@@ -328,6 +328,9 @@ def property_knowledge_sources(pid,question,asset=None):
         results.append({'type':'knowledge','id':k['id'],'label':k['title'],'excerpt':excerpt,'score':score+(12 if model else 3)})
     return results
 
+from backend.twin import install as install_twin
+install_twin(app, db, auth, UPLOADS, property_exists)
+
 class Question(BaseModel):
     property_id:int
     question:str=Field(min_length=3,max_length=2000)
