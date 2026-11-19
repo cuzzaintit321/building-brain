@@ -1,4 +1,6 @@
-![Building Brain](assets/cover.png)
+![Building Brain 3.0 Connect — product roadmap concept](https://github.com/cuzzaintit321/building-brain/raw/8bfaae92ecb3466fc45a43693a4d4fb6045ea218/assets/cover.png)
+
+*Building Brain 3.0 Connect — product vision; the current implementation is described below.*
 
 # Building Brain 2.0
 
