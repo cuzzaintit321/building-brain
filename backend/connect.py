@@ -222,6 +222,34 @@ def install(app, db, auth):
         with db() as c:r=c.execute("SELECT data FROM connect_quick_photos WHERE id=?",(pid,)).fetchone()
         if not r:raise HTTPException(404,"Photo not found")
         return Response(content=r["data"],media_type="image/jpeg",headers={"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
+    @router.get("/admin/dispatch/{property_id}/technicians",dependencies=[Depends(auth)])
+    def dispatch_technicians(property_id:int):
+        with db() as c:
+            return [dict(r) for r in c.execute("SELECT u.id,u.username FROM connect_users u JOIN connect_access a ON a.user_id=u.id WHERE a.property_id=? AND u.active=1 ORDER BY u.username",(property_id,))]
+    class Dispatch(BaseModel):
+        property_id:int
+        user_id:int
+        title:str=Field(min_length=1,max_length=180)
+        description:str=Field(default="",max_length=10000)
+        priority:Literal["Low","Normal","High","Urgent"]="Normal"
+        due_date:str=Field(default="",max_length=10)
+        asset_id:Optional[int]=None
+    @router.post("/admin/dispatch",dependencies=[Depends(auth)],status_code=201)
+    def dispatch(x:Dispatch):
+        import datetime
+        if not x.title.strip():raise HTTPException(422,"Title required")
+        if x.due_date:
+            try:datetime.date.fromisoformat(x.due_date)
+            except ValueError:raise HTTPException(422,"Invalid due date")
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            u=c.execute("SELECT u.username FROM connect_users u JOIN connect_access a ON a.user_id=u.id WHERE u.id=? AND a.property_id=? AND u.active=1",(x.user_id,x.property_id)).fetchone()
+            if not u:raise HTTPException(404,"Technician unavailable for property")
+            if x.asset_id is not None and not c.execute("SELECT 1 FROM assets WHERE id=? AND property_id=?",(x.asset_id,x.property_id)).fetchone():raise HTTPException(404,"Equipment not in property")
+            oid=c.execute("INSERT INTO orders(property_id,asset_id,title,description,priority,status,assignee,due_date) VALUES(?,?,?,?,?,'Open',?,?)",(x.property_id,x.asset_id,x.title.strip(),x.description,x.priority,u["username"],x.due_date)).lastrowid
+            c.execute("INSERT INTO connect_assignments(order_id,user_id) VALUES(?,?)",(oid,x.user_id))
+            c.execute("INSERT INTO connect_events(order_id,property_id,actor,action,detail) VALUES(?,?,?,?,?)",(oid,x.property_id,"admin","dispatched",u["username"]))
+        return {"id":oid}
     from backend.communications import install as install_communications
     install_communications(router,db,user)
     app.include_router(router)
