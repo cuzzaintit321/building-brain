@@ -3,7 +3,7 @@ import hashlib, hmac, secrets, time
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Optional
 
 def install(app, db, auth):
     router=APIRouter(prefix="/api/connect")
@@ -181,4 +181,45 @@ def install(app, db, auth):
     @router.get("/admin/orders/{oid}/photos/{pid}",dependencies=[Depends(auth)])
     def admin_photo(oid:int,pid:int):
         with db() as c:return photo_response(c,oid,pid)
+    # Quick Share is independent of work orders. Property is optional; the
+    # authenticated single-company administrator receives every shared photo.
+    with db() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS connect_quick_photos(
+            id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES connect_users(id),
+            property_id INTEGER REFERENCES properties(id), caption TEXT NOT NULL,
+            data BLOB NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+        c.execute("CREATE INDEX IF NOT EXISTS quick_photo_sender ON connect_quick_photos(user_id,id)")
+    @router.post("/quick-photos",status_code=201)
+    async def quick_share(photo:UploadFile=File(...),caption:str=Form("",max_length=1000),property_id:Optional[int]=Form(None),u=Depends(user)):
+        data=await photo.read(15*1024*1024+1)
+        if len(data)>15*1024*1024:raise HTTPException(413,"Maximum photo size 15 MB")
+        try:
+            from PIL import Image, ImageOps
+            import io
+            with Image.open(io.BytesIO(data)) as im:
+                if im.format not in ("JPEG","PNG","WEBP") or im.width*im.height>50000000:raise ValueError("Unsupported photo")
+                im=ImageOps.exif_transpose(im)
+                im.thumbnail((2400,2400))
+                out=io.BytesIO()
+                im.convert("RGB").save(out,format="JPEG",quality=85)
+                data=out.getvalue()
+        except Exception:raise HTTPException(422,"Use a valid JPEG, PNG or WebP photo")
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if not c.execute("SELECT 1 FROM connect_users WHERE id=? AND active=1",(u["id"],)).fetchone():raise HTTPException(401,"Account disabled")
+            if property_id is not None and not c.execute("SELECT 1 FROM connect_access WHERE user_id=? AND property_id=?",(u["id"],property_id)).fetchone():raise HTTPException(404,"Property not authorized")
+            if c.execute("SELECT COUNT(*) FROM connect_quick_photos WHERE user_id=? AND created_at>=datetime('now','-1 minute')",(u["id"],)).fetchone()[0]>=10:raise HTTPException(429,"Please wait before sharing more photos")
+            i=c.execute("INSERT INTO connect_quick_photos(user_id,property_id,caption,data) VALUES(?,?,?,?)",(u["id"],property_id,caption,data)).lastrowid
+        return {"id":i}
+    @router.get("/admin/quick-photos",dependencies=[Depends(auth)])
+    def quick_feed(before:int=0):
+        with db() as c:return [dict(r) for r in c.execute("""SELECT q.id,q.caption,q.created_at,u.username,p.name property_name
+            FROM connect_quick_photos q JOIN connect_users u ON u.id=q.user_id
+            LEFT JOIN properties p ON p.id=q.property_id
+            WHERE (?=0 OR q.id<?) ORDER BY q.id DESC LIMIT 50""",(before,before))]
+    @router.get("/admin/quick-photos/{pid}",dependencies=[Depends(auth)])
+    def quick_image(pid:int):
+        with db() as c:r=c.execute("SELECT data FROM connect_quick_photos WHERE id=?",(pid,)).fetchone()
+        if not r:raise HTTPException(404,"Photo not found")
+        return Response(content=r["data"],media_type="image/jpeg",headers={"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
     app.include_router(router)
