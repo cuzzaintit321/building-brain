@@ -222,4 +222,6 @@ def install(app, db, auth):
         with db() as c:r=c.execute("SELECT data FROM connect_quick_photos WHERE id=?",(pid,)).fetchone()
         if not r:raise HTTPException(404,"Photo not found")
         return Response(content=r["data"],media_type="image/jpeg",headers={"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
+    from backend.communications import install as install_communications
+    install_communications(router,db,user)
     app.include_router(router)
