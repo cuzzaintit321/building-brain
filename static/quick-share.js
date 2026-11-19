@@ -1,0 +1,9 @@
+'use strict';
+const login=document.querySelector('#login'),share=document.querySelector('#share'),status=document.querySelector('#status'),preview=document.querySelector('#preview');
+let token='',url='';
+async function request(path,options){const r=await fetch('/api/connect'+path,{...options,headers:{...options.headers,...(token?{Authorization:'Bearer '+token}:{})}});const d=await r.json();if(!r.ok){if(r.status===401&&token){token='';share.hidden=true;login.hidden=false}throw Error(typeof d.detail==='string'?d.detail:'Request failed')}return d}
+function reset(){share.reset();if(url)URL.revokeObjectURL(url);url='';preview.hidden=true;preview.removeAttribute('src')}
+login.onsubmit=async e=>{e.preventDefault();const b=login.querySelector('button');b.disabled=true;try{const d=await request('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(login)))});token=d.token;login.reset();login.hidden=true;share.hidden=false;status.textContent='Ready to share'}catch(e){status.textContent=e.message}finally{b.disabled=false}};
+share.elements.photo.onchange=()=>{if(url)URL.revokeObjectURL(url);const f=share.elements.photo.files[0];url=f?URL.createObjectURL(f):'';preview.hidden=!url;if(url)preview.src=url;else preview.removeAttribute('src')};
+share.onsubmit=async e=>{e.preventDefault();const b=share.querySelector('button');b.disabled=true;status.textContent='Sending…';try{await request('/quick-photos',{method:'POST',body:new FormData(share)});reset();status.textContent='Photo sent to management.'}catch(e){status.textContent=e.message}finally{b.disabled=false}};
+document.querySelector('#logout').onclick=async()=>{try{await request('/logout',{method:'POST'})}catch{}finally{token='';reset();share.hidden=true;login.hidden=false;status.textContent='Signed out'}};
