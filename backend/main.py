@@ -78,6 +78,9 @@ init()
 def auth(request:Request):
     if request.session.get('authenticated') is not True:raise HTTPException(401,'Sign in required')
 
+from backend.connect import install as install_connect
+install_connect(app, db, auth)
+
 def owner(sql,identifier):
     r=row(sql,(identifier,))
     if not r:raise HTTPException(404,'Record not found')

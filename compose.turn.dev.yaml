@@ -1,0 +1,22 @@
+# Optional development TURN relay. Configure a public IP, realm, secret,
+# firewall and TLS before using outside a controlled test environment.
+services:
+  coturn:
+    image: coturn/coturn:4.6.3
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${CONNECT_TURN_SECRET:?Set a strong TURN secret}
+      - --realm=${TURN_REALM:?Set TURN realm}
+      - --external-ip=${TURN_EXTERNAL_IP:?Set public relay IP}
+      - --min-port=49160
+      - --max-port=49200
+      - --no-loopback-peers
+      - --no-multicast-peers
+      - --user-quota=4
+      - --total-quota=40
