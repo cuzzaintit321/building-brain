@@ -1,6 +1,7 @@
 """Connected workforce API for the canonical Building Brain backend."""
 import hashlib, hmac, secrets, time
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -110,4 +111,74 @@ def install(app, db, auth):
     @router.get("/admin/activity",dependencies=[Depends(auth)])
     def activity(after:int=0):
         with db() as c:return [dict(r) for r in c.execute("SELECT e.*,o.title FROM connect_events e JOIN orders o ON o.id=e.order_id WHERE e.id>? ORDER BY e.id LIMIT 200",(after,))]
+    # Photo bytes stay in the authenticated database, never a public static directory.
+    with db() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS connect_photos(
+            id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id),
+            property_id INTEGER NOT NULL REFERENCES properties(id),
+            user_id INTEGER NOT NULL REFERENCES connect_users(id),
+            category TEXT NOT NULL, caption TEXT NOT NULL, mime TEXT NOT NULL,
+            data BLOB NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+        c.execute("CREATE INDEX IF NOT EXISTS connect_photos_order ON connect_photos(order_id,id)")
+    def photo_access(c,oid,uid):
+        r=c.execute("""SELECT o.property_id FROM orders o
+            JOIN connect_assignments a ON a.order_id=o.id
+            JOIN connect_access p ON p.property_id=o.property_id AND p.user_id=a.user_id
+            JOIN connect_users u ON u.id=a.user_id AND u.active=1
+            WHERE o.id=? AND a.user_id=?""",(oid,uid)).fetchone()
+        if not r:raise HTTPException(404,"Assigned order not found")
+        return r["property_id"]
+    @router.post("/orders/{oid}/photos",status_code=201)
+    async def add_photo(oid:int,photo:UploadFile=File(...),category:Literal["Before","After","Progress","Issue"]=Form("Progress"),caption:str=Form("",max_length=1000),u=Depends(user)):
+        with db() as c:photo_access(c,oid,u["id"])
+        data=await photo.read(5*1024*1024+1)
+        if len(data)>5*1024*1024:raise HTTPException(413,"Maximum photo size 5 MB")
+        if data.startswith(bytes.fromhex("ffd8ff")):mime="image/jpeg"
+        elif data.startswith(bytes.fromhex("89504e470d0a1a0a")):mime="image/png"
+        elif data[:4]==b"RIFF" and data[8:12]==b"WEBP":mime="image/webp"
+        else:raise HTTPException(415,"Use JPEG, PNG or WebP")
+        # Decode and re-encode to validate pixels and discard metadata, including GPS EXIF.
+        try:
+            from PIL import Image
+            import io
+            with Image.open(io.BytesIO(data)) as im:
+                if im.width*im.height>20000000:raise ValueError("Image too large")
+                im.load()
+                im.thumbnail((2400,2400))
+                out=io.BytesIO()
+                im.convert("RGB").save(out,format="JPEG",quality=85)
+                data=out.getvalue();mime="image/jpeg"
+        except Exception:raise HTTPException(422,"Invalid or oversized photo")
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            pid=photo_access(c,oid,u["id"])
+            if c.execute("SELECT COUNT(*) FROM connect_photos WHERE order_id=?",(oid,)).fetchone()[0]>=50:raise HTTPException(409,"Maximum 50 photos per order")
+            i=c.execute("INSERT INTO connect_photos(order_id,property_id,user_id,category,caption,mime,data) VALUES(?,?,?,?,?,?,?)",(oid,pid,u["id"],category,caption,mime,data)).lastrowid
+            c.execute("INSERT INTO connect_events(order_id,property_id,actor,action,detail) VALUES(?,?,?,?,?)",(oid,pid,u["username"],"photo uploaded",category+" #"+str(i)))
+        return {"id":i}
+    def photo_list(c,oid):
+        return [dict(r) for r in c.execute("""SELECT p.id,p.order_id,p.category,p.caption,p.created_at,u.username
+            FROM connect_photos p JOIN connect_users u ON u.id=p.user_id
+            JOIN orders o ON o.id=p.order_id AND o.property_id=p.property_id
+            WHERE p.order_id=? ORDER BY p.id DESC""",(oid,))]
+    @router.get("/orders/{oid}/photos")
+    def worker_photos(oid:int,u=Depends(user)):
+        with db() as c:
+            photo_access(c,oid,u["id"])
+            return photo_list(c,oid)
+    @router.get("/admin/orders/{oid}/photos",dependencies=[Depends(auth)])
+    def admin_photos(oid:int):
+        with db() as c:return photo_list(c,oid)
+    def photo_response(c,oid,pid):
+        r=c.execute("""SELECT p.data,p.mime FROM connect_photos p JOIN orders o ON o.id=p.order_id AND o.property_id=p.property_id WHERE p.id=? AND p.order_id=?""",(pid,oid)).fetchone()
+        if not r:raise HTTPException(404,"Photo not found")
+        return Response(content=r["data"],media_type=r["mime"],headers={"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
+    @router.get("/orders/{oid}/photos/{pid}")
+    def worker_photo(oid:int,pid:int,u=Depends(user)):
+        with db() as c:
+            photo_access(c,oid,u["id"])
+            return photo_response(c,oid,pid)
+    @router.get("/admin/orders/{oid}/photos/{pid}",dependencies=[Depends(auth)])
+    def admin_photo(oid:int,pid:int):
+        with db() as c:return photo_response(c,oid,pid)
     app.include_router(router)
