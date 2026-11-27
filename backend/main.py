@@ -111,8 +111,8 @@ class WorkspaceMiddleware:
                 path=scope['path']
                 if path == '/api/login' or path == '/api/tenant/login':
                     return await JSONResponse({'detail':'Sign out before switching accounts'},status_code=403)(scope,receive,send)
-                if path.startswith('/api/billing') or path == '/billing':
-                    return await JSONResponse({'detail':'Tenant billing not enabled'},status_code=403)(scope,receive,send)
+                if (path.startswith('/api/billing') or path == '/billing') and role != 'owner':
+                    return await JSONResponse({'detail':'Company owner required'},status_code=403)(scope,receive,send)
                 if role not in ('owner','admin') and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout' and not (role == 'member' and path.startswith(('/api/orders','/api/pm','/api/notes','/api/ask'))):
                     return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
                 WORKSPACE.set(REGISTRY.workspace(uid,oid))
