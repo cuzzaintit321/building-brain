@@ -113,7 +113,7 @@ class WorkspaceMiddleware:
                     return await JSONResponse({'detail':'Sign out before switching accounts'},status_code=403)(scope,receive,send)
                 if path.startswith('/api/billing') or path == '/billing':
                     return await JSONResponse({'detail':'Tenant billing not enabled'},status_code=403)(scope,receive,send)
-                if role != 'owner' and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout':
+                if role not in ('owner','admin') and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout' and not (role == 'member' and path.startswith(('/api/orders','/api/pm','/api/notes','/api/ask'))):
                     return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
                 WORKSPACE.set(REGISTRY.workspace(uid,oid))
             await self.app(scope,receive,send)
@@ -457,3 +457,37 @@ def tenant_login_page():
     if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
         raise HTTPException(404,'Not found')
     return FileResponse(ROOT/'static'/'tenant-login.html')
+
+
+class InvitationIn(BaseModel):
+    email: str = Field(max_length=254)
+    role: str = Field(max_length=16)
+
+class InvitationAccept(BaseModel):
+    token: str = Field(max_length=128)
+    password: str = Field(min_length=12,max_length=256)
+
+@app.post('/api/tenant/invitations',dependencies=[Depends(auth)])
+def invite_employee(x:InvitationIn,request:Request):
+    uid,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not uid or not oid:
+        raise HTTPException(403,'Company owner required')
+    try:
+        token=REGISTRY.invite(uid,oid,x.email,x.role)
+    except PermissionError:
+        raise HTTPException(403,'Company owner required')
+    except ValueError:
+        raise HTTPException(422,'Invalid invitation')
+    return {'token':token,'expires_in_seconds':86400}
+
+@app.post('/api/tenant/invitations/accept')
+def accept_employee(x:InvitationAccept,request:Request):
+    if os.getenv('TENANT_PILOT_ENABLED','false').lower()!='true':
+        raise HTTPException(404,'Not found')
+    if request.session.get('authenticated'):
+        raise HTTPException(409,'Sign out before accepting an invitation')
+    try:
+        oid,uid=REGISTRY.accept_invitation(x.token,x.password)
+    except (ValueError,sqlite3.IntegrityError):
+        raise HTTPException(400,'Invitation unavailable')
+    return {'organization_id':oid,'ok':True}
