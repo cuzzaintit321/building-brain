@@ -491,3 +491,43 @@ def accept_employee(x:InvitationAccept,request:Request):
     except (ValueError,sqlite3.IntegrityError):
         raise HTTPException(400,'Invitation unavailable')
     return {'organization_id':oid,'ok':True}
+
+
+@app.get('/api/tenant/employees',dependencies=[Depends(auth)])
+def employees(request:Request):
+    uid,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not uid or REGISTRY.role(uid,oid) not in ('owner','admin'):
+        raise HTTPException(403,'Company administrator required')
+    with REGISTRY.connect() as c:
+        return [dict(x) for x in c.execute("SELECT u.id,u.email,m.role FROM users u JOIN memberships m ON u.id=m.user_id WHERE m.organization_id=? ORDER BY u.email",(oid,))]
+
+@app.get('/employees',dependencies=[Depends(auth)])
+def employees_page(request:Request):
+    if REGISTRY.role(request.session.get('user_id'),request.session.get('organization_id')) not in ('owner','admin'):
+        raise HTTPException(403,'Company administrator required')
+    return FileResponse(ROOT/'static'/'employees.html')
+
+class EmployeeRole(BaseModel):
+    role:str
+
+@app.put('/api/tenant/employees/{uid}',dependencies=[Depends(auth)])
+def employee_role(uid:str,x:EmployeeRole,request:Request):
+    actor,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not actor or REGISTRY.role(actor,oid)!='owner' or x.role not in ('admin','member','viewer'):
+        raise HTTPException(403,'Company owner required')
+    with REGISTRY.connect() as c:
+        result=c.execute("UPDATE memberships SET role=? WHERE organization_id=? AND user_id=? AND role!='owner'",(x.role,oid,uid))
+        if not result.rowcount:
+            raise HTTPException(404,'Employee not found')
+    return {'ok':True}
+
+@app.delete('/api/tenant/employees/{uid}',dependencies=[Depends(auth)])
+def remove_employee(uid:str,request:Request):
+    actor,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not actor or REGISTRY.role(actor,oid)!='owner':
+        raise HTTPException(403,'Company owner required')
+    with REGISTRY.connect() as c:
+        result=c.execute("DELETE FROM memberships WHERE organization_id=? AND user_id=? AND role!='owner'",(oid,uid))
+        if not result.rowcount:
+            raise HTTPException(404,'Employee not found')
+    return {'ok':True}
