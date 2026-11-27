@@ -373,3 +373,12 @@ async def ask(x:Question):
         except Exception:pass
     answer='Relevant records found (source excerpts; AI synthesis unavailable):\n\n'+'\n\n'.join(f"[{i+1}] {s['label']}: {s['excerpt']}" for i,s in enumerate(found[:5]))+'\n\nVerify these details against current building records before taking action.'
     return {'answer':answer,'sources':found,'mode':'evidence'}
+
+
+# Billing pilot routes are authenticated by the existing workspace session.
+from .billing import router as billing_router
+app.include_router(billing_router)
+
+@app.get('/billing', dependencies=[Depends(auth)])
+def billing_page():
+    return FileResponse(ROOT/'static'/'billing.html')
