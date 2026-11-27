@@ -185,7 +185,9 @@ class Property(BaseModel):name:str=Field(min_length=1,max_length=140);address:st
 def properties():return rows('SELECT * FROM properties ORDER BY name')
 @app.post('/api/properties',dependencies=[Depends(auth)])
 def create_property(x:Property):
+    limit=resource_limit('properties')
     with db() as c:
+        enforce_quota(c,'properties',limit)
         r=c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',(x.name,x.address,x.notes));return {'id':r.lastrowid}
 
 class PropertyLocation(BaseModel):
@@ -208,7 +210,9 @@ def assets(property_id:Optional[int]=None):return rows('SELECT * FROM assets WHE
 @app.post('/api/assets',dependencies=[Depends(auth)])
 def create_asset(x:Asset):
     property_exists(x.property_id)
+    limit=resource_limit('assets')
     with db() as c:
+        enforce_quota(c,'assets',limit)
         r=c.execute('INSERT INTO assets(property_id,name,category,location,manufacturer,model,serial,status,notes,warranty_expires) VALUES(?,?,?,?,?,?,?,?,?,?)',tuple(getattr(x,k) for k in ('property_id','name','category','location','manufacturer','model','serial','status','notes','warranty_expires')))
         return {'id':r.lastrowid}
 @app.put('/api/assets/{aid}',dependencies=[Depends(auth)])
@@ -643,3 +647,25 @@ def allow_attempt(ip,path):
         c.execute("DELETE FROM auth_attempts WHERE window<?",(now//900-1,))
         c.execute("INSERT INTO auth_attempts VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN window=excluded.window THEN count+1 ELSE 1 END,window=excluded.window",(key,now//900))
         return c.execute("SELECT count FROM auth_attempts WHERE key=?",(key,)).fetchone()[0]<=10
+
+
+def resource_limit(resource):
+    if WORKSPACE.get() is None or os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()!='true':
+        return None
+    from .billing import active_plan
+    plan=active_plan()
+    if not plan:
+        raise HTTPException(402,'Active subscription required')
+    raw=os.getenv('LIMIT_'+plan.upper()+'_'+resource.upper(),'')
+    if not raw.isdecimal() or int(raw)<1:
+        raise HTTPException(503,'Plan resource limit not configured')
+    return int(raw)
+
+def enforce_quota(c,resource,limit):
+    if limit is None:
+        return
+    if resource not in ('properties','assets'):
+        raise ValueError('Unknown resource')
+    c.execute('BEGIN IMMEDIATE')
+    if c.execute('SELECT COUNT(*) FROM '+resource).fetchone()[0]>=limit:
+        raise HTTPException(409,'Plan resource limit reached')
