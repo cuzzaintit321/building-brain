@@ -105,8 +105,15 @@ class WorkspaceMiddleware:
             if uid or oid:
                 if not uid or not oid or not REGISTRY.role(uid,oid):
                     return await JSONResponse({'detail':'Organization access denied'},status_code=403)(scope,receive,send)
-                # Fail closed until tenant routes and role checks are audited.
-                return await JSONResponse({'detail':'Tenant sessions are not enabled'},status_code=403)(scope,receive,send)
+                if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
+                    return await JSONResponse({'detail':'Tenant sessions are not enabled'},status_code=403)(scope,receive,send)
+                role=REGISTRY.role(uid,oid)
+                path=scope['path']
+                if path.startswith('/api/billing') or path == '/billing':
+                    return await JSONResponse({'detail':'Tenant billing not enabled'},status_code=403)(scope,receive,send)
+                if role != 'owner' and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout':
+                    return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
+                WORKSPACE.set(REGISTRY.workspace(uid,oid))
             await self.app(scope,receive,send)
         finally:
             WORKSPACE.reset(token)
@@ -420,3 +427,31 @@ app.include_router(billing_router)
 @app.get('/billing', dependencies=[Depends(auth)])
 def billing_page():
     return FileResponse(ROOT/'static'/'billing.html')
+
+
+class TenantLogin(BaseModel):
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=256)
+    organization_id: str = Field(max_length=32)
+
+@app.post('/api/tenant/login')
+def tenant_login(x:TenantLogin, request:Request):
+    if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
+        raise HTTPException(404,'Not found')
+    uid=REGISTRY.authenticate(x.email,x.password)
+    if not uid or not REGISTRY.role(uid,x.organization_id):
+        raise HTTPException(401,'Invalid credentials or membership')
+    token=WORKSPACE.set(REGISTRY.workspace(uid,x.organization_id))
+    try:
+        init(seed_demo=False)
+    finally:
+        WORKSPACE.reset(token)
+    request.session.clear()
+    request.session.update({'authenticated':True,'user_id':uid,'organization_id':x.organization_id})
+    return {'ok':True}
+
+@app.get('/tenant-login')
+def tenant_login_page():
+    if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
+        raise HTTPException(404,'Not found')
+    return FileResponse(ROOT/'static'/'tenant-login.html')
