@@ -36,6 +36,8 @@ def initialize():
 def require_pilot():
     if not enabled():
         raise HTTPException(503, "Billing pilot is disabled")
+    if not config("STRIPE_SECRET_KEY").startswith(("sk_test_", "rk_test_")):
+        raise HTTPException(503, "Only Stripe test mode is supported by this pilot")
 
 def origin():
     value = config("BILLING_PUBLIC_URL").rstrip("/")
@@ -57,6 +59,7 @@ def status():
         customer = c.execute("SELECT customer FROM billing_workspace WHERE id=1").fetchone()[0]
     subscriptions = []
     if enabled() and customer:
+        require_pilot()
         result = stripe("GET", "subscriptions?customer=" + customer + "&status=all&limit=100")
         prices = price_map()
         for s in result["data"]:
@@ -89,7 +92,7 @@ def checkout(x: Checkout):
             old = stripe("GET", "checkout/sessions/" + previous)
             if old["status"] == "open":
                 stripe("POST", "checkout/sessions/" + previous + "/expire")
-            elif old["status"] == "complete":
+            elif old["status"] == "complete" and not existing["data"]:
                 raise HTTPException(409, "Previous checkout completed; review billing status")
         session = stripe("POST", "checkout/sessions", {"mode":"subscription","customer":customer,"line_items[0][price]":price,"line_items[0][quantity]":"1","success_url":base+"/billing","cancel_url":base+"/billing","subscription_data[metadata][application]":"building-brain"}, secrets.token_hex(24))
         c.execute("UPDATE billing_workspace SET checkout=? WHERE id=1",(session["id"],))
@@ -105,3 +108,47 @@ def portal():
         raise HTTPException(409, "No billing customer")
     session = stripe("POST", "billing_portal/sessions", {"customer":customer,"configuration":config("STRIPE_PORTAL_CONFIGURATION"),"return_url":origin()+"/billing"})
     return {"url":session["url"]}
+
+
+def verify_signature(payload, header, secret, now=None):
+    parts = [p.split("=", 1) for p in header.split(",") if "=" in p]
+    timestamps = [v for k,v in parts if k == "t"]
+    signatures = [v for k,v in parts if k == "v1"]
+    try:
+        if len(timestamps) != 1 or abs((time.time() if now is None else now) - int(timestamps[0])) > 300:
+            return False
+        digest = hmac.new(secret.encode(), timestamps[0].encode() + b"." + payload, hashlib.sha256).hexdigest()
+        return any(hmac.compare_digest(digest, v) for v in signatures)
+    except (ValueError, TypeError):
+        return False
+
+@router.post("/webhook")
+async def webhook(request: Request):
+    require_pilot()
+    payload = await request.body()
+    if len(payload) > 1024 * 1024:
+        raise HTTPException(413, "Event too large")
+    if not verify_signature(payload, request.headers.get("stripe-signature", ""), config("STRIPE_WEBHOOK_SECRET")):
+        raise HTTPException(400, "Invalid Stripe signature")
+    try:
+        event = json.loads(payload)
+        event_id, kind = event["id"], event["type"]
+        obj = event["data"]["object"]
+        if not isinstance(event_id, str) or not isinstance(kind, str) or not isinstance(obj, dict):
+            raise ValueError()
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "Invalid event")
+    if event.get("livemode") is not False or kind not in {
+        "checkout.session.completed", "customer.subscription.created",
+        "customer.subscription.updated", "customer.subscription.deleted",
+        "invoice.paid", "invoice.payment_failed"
+    }:
+        return {"received": True, "ignored": True}
+    initialize()
+    with db() as c:
+        customer = c.execute("SELECT customer FROM billing_workspace WHERE id=1").fetchone()[0]
+        if not customer or obj.get("customer") != customer:
+            return {"received": True, "ignored": True}
+        c.execute("CREATE TABLE IF NOT EXISTS billing_events (event_id TEXT PRIMARY KEY, kind TEXT NOT NULL, received_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+        result = c.execute("INSERT OR IGNORE INTO billing_events(event_id,kind) VALUES(?,?)", (event_id,kind))
+        return {"received": True, "duplicate": result.rowcount == 0}
