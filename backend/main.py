@@ -118,6 +118,15 @@ class WorkspaceMiddleware:
                 if role not in ('owner','admin') and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout' and not (role == 'member' and path.startswith(('/api/orders','/api/pm','/api/notes','/api/ask'))):
                     return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
                 WORKSPACE.set(REGISTRY.workspace(uid,oid))
+                if os.getenv('TENANT_SUBSCRIPTION_REQUIRED','false').lower()=='true' and path.startswith('/api/') and not path.startswith(('/api/billing/','/api/tenant/')) and path not in ('/api/session','/api/logout'):
+                    from starlette.concurrency import run_in_threadpool
+                    from .entitlements import active_plan
+                    try:
+                        plan=await run_in_threadpool(active_plan)
+                    except HTTPException as exc:
+                        return await JSONResponse({'detail':exc.detail},status_code=exc.status_code)(scope,receive,send)
+                    if not plan:
+                        return await JSONResponse({'detail':'Active subscription required'},status_code=402)(scope,receive,send)
                 if scope['method'] not in ('GET','HEAD','OPTIONS'):
                     headers=dict(scope.get('headers',[]))
                     origin=headers.get(b'origin',b'').decode()
