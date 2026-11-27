@@ -3,7 +3,7 @@ import os, secrets, time, hmac, hashlib, json
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from .main import auth, db
+from .main import auth, db, WORKSPACE, REGISTRY
 
 router = APIRouter(prefix="/api/billing")
 PLANS = {"starter": (99, 990), "professional": (299, 2990), "enterprise": (799, 7990)}
@@ -48,12 +48,19 @@ def origin():
 def price_map():
     return {f"{p}:{i}": os.getenv(f"STRIPE_PRICE_{p.upper()}_{i.upper()}", "") for p in PLANS for i in ("monthly", "annual")}
 
+def billing_owner(request):
+    uid, oid = request.session.get("user_id"), request.session.get("organization_id")
+    if uid or oid:
+        if not uid or not oid or REGISTRY.role(uid, oid) != "owner" or WORKSPACE.get() is None:
+            raise HTTPException(403, "Company owner required")
+
 class Checkout(BaseModel):
     plan: str
     interval: str = "monthly"
 
 @router.get("/status", dependencies=[Depends(auth)])
-def status():
+def status(request: Request):
+    billing_owner(request)
     initialize()
     with db() as c:
         customer = c.execute("SELECT customer FROM billing_workspace WHERE id=1").fetchone()[0]
@@ -72,7 +79,8 @@ def status():
     return {"enabled": enabled(), "plans": PLANS, "subscriptions": subscriptions, "has_customer": bool(customer)}
 
 @router.post("/checkout", dependencies=[Depends(auth)])
-def checkout(x: Checkout):
+def checkout(x: Checkout, request: Request):
+    billing_owner(request)
     require_pilot()
     base = origin()
     price = price_map().get(x.plan + ":" + x.interval)
@@ -83,7 +91,7 @@ def checkout(x: Checkout):
         c.execute("BEGIN IMMEDIATE")
         customer, previous = c.execute("SELECT customer,checkout FROM billing_workspace WHERE id=1").fetchone()
         if not customer:
-            customer = stripe("POST", "customers", {"description":"Building Brain pilot workspace","metadata[application]":"building-brain"}, "building-brain-" + hashlib.sha256(os.environ["SECRET_KEY"].encode()).hexdigest())["id"]
+            customer = stripe("POST", "customers", {"description":"Building Brain pilot workspace","metadata[application]":"building-brain"}, "building-brain-" + hashlib.sha256((os.environ["SECRET_KEY"] + ":" + str(WORKSPACE.get() or "legacy")).encode()).hexdigest())["id"]
             c.execute("UPDATE billing_workspace SET customer=? WHERE id=1",(customer,))
         existing = stripe("GET", "subscriptions?customer=" + customer + "&status=all&limit=100")
         if existing.get("has_more") or any(s["status"] not in ("canceled","incomplete_expired") for s in existing["data"]):
@@ -94,12 +102,16 @@ def checkout(x: Checkout):
                 stripe("POST", "checkout/sessions/" + previous + "/expire")
             elif old["status"] == "complete" and not existing["data"]:
                 raise HTTPException(409, "Previous checkout completed; review billing status")
-        session = stripe("POST", "checkout/sessions", {"mode":"subscription","customer":customer,"line_items[0][price]":price,"line_items[0][quantity]":"1","success_url":base+"/billing","cancel_url":base+"/billing","subscription_data[metadata][application]":"building-brain"}, secrets.token_hex(24))
+        params = {"mode":"subscription","customer":customer,"line_items[0][price]":price,"line_items[0][quantity]":"1","success_url":base+"/billing","cancel_url":base+"/billing","subscription_data[metadata][application]":"building-brain","subscription_data[trial_period_days]":"14"}
+        if existing["data"]:
+            params.pop("subscription_data[trial_period_days]", None)
+        session = stripe("POST", "checkout/sessions", params, secrets.token_hex(24))
         c.execute("UPDATE billing_workspace SET checkout=? WHERE id=1",(session["id"],))
         return {"url":session["url"]}
 
 @router.post("/portal", dependencies=[Depends(auth)])
-def portal():
+def portal(request: Request):
+    billing_owner(request)
     require_pilot()
     initialize()
     with db() as c:
