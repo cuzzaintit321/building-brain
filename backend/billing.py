@@ -199,5 +199,19 @@ def active_plan():
     except (HTTPException,KeyError,TypeError):
         return False
 
-def entitlement():
+def current_plan():
     return bool(active_plan())
+
+
+def entitlement():
+    return bool(current_plan())
+
+# Proposed pilot quotas; review before commercial activation.
+LIMITS={"starter":{"properties":5,"assets":250},"professional":{"properties":25,"assets":2500},"enterprise":{"properties":100,"assets":10000}}
+
+def enforce_quota(c, resource, plan):
+    if resource not in ("properties","assets") or plan not in LIMITS:
+        raise HTTPException(402,"Active subscription required")
+    count=c.execute("SELECT COUNT(*) FROM "+resource).fetchone()[0]
+    if count>=LIMITS[plan][resource]:
+        raise HTTPException(409,"Plan resource limit reached")
