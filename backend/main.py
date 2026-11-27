@@ -548,3 +548,66 @@ def remove_employee(uid:str,request:Request):
         if not result.rowcount:
             raise HTTPException(404,'Employee not found')
     return {'ok':True}
+
+
+from .account_mail import send_token, consume
+
+class AccountEmail(BaseModel):
+    email:str=Field(max_length=254)
+
+class Registration(AccountEmail):
+    name:str=Field(min_length=1,max_length=140)
+    password:str=Field(min_length=12,max_length=256)
+    token:str=Field(max_length=128)
+
+class Recovery(AccountEmail):
+    password:str=Field(min_length=12,max_length=256)
+    token:str=Field(max_length=128)
+
+def public_accounts():
+    if os.getenv('PUBLIC_ACCOUNTS_ENABLED','false').lower()!='true':
+        raise HTTPException(404,'Not found')
+
+@app.post('/api/accounts/verification')
+def verification(x:AccountEmail):
+    public_accounts()
+    send_token(REGISTRY,x.email,'verification')
+    return {'ok':True}
+
+@app.post('/api/accounts/register')
+def register(x:Registration):
+    public_accounts()
+    try:
+        with REGISTRY.connect() as c:
+            consume(c,x.email,'verification',x.token)
+        oid,uid=REGISTRY.create_organization(x.name,x.email,x.password)
+    except (ValueError,sqlite3.IntegrityError,sqlite3.OperationalError):
+        raise HTTPException(400,'Registration unavailable')
+    return {'organization_id':oid}
+
+@app.post('/api/accounts/recovery')
+def recovery(x:AccountEmail):
+    public_accounts()
+    with REGISTRY.connect() as c:
+        exists=c.execute("SELECT 1 FROM users WHERE email=?",(x.email.strip().casefold(),)).fetchone()
+    if exists:
+        send_token(REGISTRY,x.email,'recovery')
+    return {'ok':True}
+
+@app.post('/api/accounts/reset')
+def reset_password(x:Recovery):
+    public_accounts()
+    salt=secrets.token_hex(16)
+    digest=REGISTRY.password_hash(x.password,salt)
+    try:
+        with REGISTRY.connect() as c:
+            consume(c,x.email,'recovery',x.token)
+            c.execute("UPDATE users SET salt=?,password_hash=? WHERE email=?",(salt,digest,x.email.strip().casefold()))
+    except (ValueError,sqlite3.OperationalError):
+        raise HTTPException(400,'Invalid or expired code')
+    return {'ok':True}
+
+@app.get('/register')
+def registration_page():
+    public_accounts()
+    return FileResponse(ROOT/'static'/'register.html')
