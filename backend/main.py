@@ -1,5 +1,7 @@
 import os, sqlite3, secrets, hashlib, hmac, re, io, json, datetime, pathlib
 from contextlib import contextmanager
+from contextvars import ContextVar
+from .organizations import Registry
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,6 +17,16 @@ DATA = pathlib.Path(os.environ.get('DATA_DIR',str(ROOT/'data')))
 DATA.mkdir(parents=True,exist_ok=True)
 UPLOADS=DATA/'uploads';UPLOADS.mkdir(exist_ok=True)
 DB=DATA/'buildingbrain.db'
+WORKSPACE=ContextVar('workspace', default=None)
+REGISTRY=Registry(DATA/'identity')
+def database_path():
+    workspace=WORKSPACE.get()
+    return workspace/'buildingbrain.db' if workspace else DB
+def uploads_path():
+    workspace=WORKSPACE.get()
+    path=workspace/'uploads' if workspace else UPLOADS
+    path.mkdir(mode=0o700, exist_ok=True)
+    return path
 SECRET=os.environ.get('SECRET_KEY','')
 PASSWORD=os.environ.get('ADMIN_PASSWORD','')
 if not SECRET or not PASSWORD:
@@ -26,7 +38,7 @@ app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 def today():return datetime.date.today().isoformat()
 @contextmanager
 def db():
-    c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA busy_timeout=10000')
+    c=sqlite3.connect(database_path(),timeout=15);c.row_factory=sqlite3.Row;c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA busy_timeout=10000')
     try:yield c;c.commit()
     finally:c.close()
 def query(sql,args=(),one=False):
@@ -40,7 +52,7 @@ def row(sql,args=()):
     with db() as c:
         r=c.execute(sql,args).fetchone();return dict(r) if r else None
 
-def init():
+def init(seed_demo=True):
     with db() as c:
         c.executescript('''
         PRAGMA journal_mode=WAL;
@@ -66,7 +78,7 @@ def init():
         for name, definition in [('latitude','REAL'),('longitude','REAL'),('geofence_radius','INTEGER NOT NULL DEFAULT 100')]:
             if name not in columns:
                 c.execute(f'ALTER TABLE properties ADD COLUMN {name} {definition}')
-        if c.execute('SELECT COUNT(*) FROM properties').fetchone()[0]==0:
+        if seed_demo and c.execute('SELECT COUNT(*) FROM properties').fetchone()[0]==0:
             c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',('Demo Property','Sample property — replace with your own','Demonstration records only. No equipment locations or safety procedures are verified.'))
             pid=c.execute('SELECT last_insert_rowid()').fetchone()[0]
             c.execute('INSERT INTO assets(property_id,name,category,location,manufacturer,model,status,notes) VALUES(?,?,?,?,?,?,?,?)',(pid,'Rooftop Air Handler RTU-1','HVAC','Roof — demo location','','','Operational','Demo asset; verify all details onsite.'))
@@ -77,6 +89,32 @@ init()
 
 def auth(request:Request):
     if request.session.get('authenticated') is not True:raise HTTPException(401,'Sign in required')
+
+# Resolve tenant context before any application handler runs. Tenant login is
+# deliberately not exposed until role and billing enforcement are complete.
+class WorkspaceMiddleware:
+    def __init__(self, app):
+        self.app=app
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            return await self.app(scope,receive,send)
+        session=scope.get('session',{})
+        uid,oid=session.get('user_id'),session.get('organization_id')
+        token=WORKSPACE.set(None)
+        try:
+            if uid or oid:
+                if not uid or not oid or not REGISTRY.role(uid,oid):
+                    return await JSONResponse({'detail':'Organization access denied'},status_code=403)(scope,receive,send)
+                # Fail closed until tenant routes and role checks are audited.
+                return await JSONResponse({'detail':'Tenant sessions are not enabled'},status_code=403)(scope,receive,send)
+            await self.app(scope,receive,send)
+        finally:
+            WORKSPACE.reset(token)
+
+# Starlette adds middleware in reverse order; session middleware must be outermost.
+app.add_middleware(WorkspaceMiddleware)
+app.user_middleware.reverse()
+
 
 def owner(sql,identifier):
     r=row(sql,(identifier,))
@@ -194,18 +232,18 @@ async def upload_doc(property_id:int=Form(...),file:UploadFile=File(...)):
     try:content=extract(data,ext)[:500000]
     except Exception:raise HTTPException(400,'Could not extract text from this file')
     if not content.strip():raise HTTPException(400,'No searchable text found. Scanned PDFs need OCR before upload.')
-    filename=secrets.token_hex(16)+ext;(UPLOADS/filename).write_bytes(data)
+    filename=secrets.token_hex(16)+ext;(uploads_path()/filename).write_bytes(data)
     with db() as c:
         r=c.execute('INSERT INTO documents(property_id,name,filename,content) VALUES(?,?,?,?)',(property_id,name,filename,content))
         return {'id':r.lastrowid,'name':name,'characters':len(content)}
 @app.get('/api/documents/{did}/download',dependencies=[Depends(auth)])
 def download_doc(did:int):
-    x=owner('SELECT * FROM documents WHERE id=?',did);return FileResponse(UPLOADS/x['filename'],filename=x['name'])
+    x=owner('SELECT * FROM documents WHERE id=?',did);return FileResponse(uploads_path()/x['filename'],filename=x['name'])
 @app.delete('/api/documents/{did}',dependencies=[Depends(auth)])
 def delete_doc(did:int):
     x=owner('SELECT * FROM documents WHERE id=?',did)
     with db() as c:c.execute('DELETE FROM documents WHERE id=?',(did,))
-    (UPLOADS/x['filename']).unlink(missing_ok=True)
+    (uploads_path()/x['filename']).unlink(missing_ok=True)
     return {'ok':True}
 
 @app.get('/api/notes',dependencies=[Depends(auth)])
@@ -222,7 +260,7 @@ async def add_note(property_id:int=Form(...),text:str=Form(...),asset_id:Optiona
         data=await photo.read(5*1024*1024+1)
         if len(data)>5*1024*1024:raise HTTPException(413,'Photo max 5 MB')
         if not (data.startswith(b'\xff\xd8') or data.startswith(b'\x89PNG\r\n\x1a\n') or (data[:4]==b'RIFF' and data[8:12]==b'WEBP')):raise HTTPException(400,'Invalid image file')
-        filename=secrets.token_hex(16)+ext;(UPLOADS/filename).write_bytes(data)
+        filename=secrets.token_hex(16)+ext;(uploads_path()/filename).write_bytes(data)
     if not text.strip() and not filename:raise HTTPException(400,'Add a note or a photo')
     with db() as c:
         r=c.execute('INSERT INTO notes(property_id,asset_id,order_id,text,filename) VALUES(?,?,?,?,?)',(property_id,asset_id,order_id,text,filename));return {'id':r.lastrowid}
@@ -230,7 +268,7 @@ async def add_note(property_id:int=Form(...),text:str=Form(...),asset_id:Optiona
 def note_photo(nid:int):
     x=owner('SELECT * FROM notes WHERE id=?',nid)
     if not x['filename']:raise HTTPException(404,'No photo')
-    return FileResponse(UPLOADS/x['filename'])
+    return FileResponse(uploads_path()/x['filename'])
 
 @app.get('/api/dashboard',dependencies=[Depends(auth)])
 def dashboard(property_id:int):
