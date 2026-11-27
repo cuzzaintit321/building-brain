@@ -103,6 +103,8 @@ class WorkspaceMiddleware:
         token=WORKSPACE.set(None)
         try:
             if uid or oid:
+                if scope['path'] == '/api/logout':
+                    return await self.app(scope,receive,send)
                 if not uid or not oid or not REGISTRY.role(uid,oid):
                     return await JSONResponse({'detail':'Organization access denied'},status_code=403)(scope,receive,send)
                 if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
@@ -116,6 +118,12 @@ class WorkspaceMiddleware:
                 if role not in ('owner','admin') and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout' and not (role == 'member' and path.startswith(('/api/orders','/api/pm','/api/notes','/api/ask'))):
                     return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
                 WORKSPACE.set(REGISTRY.workspace(uid,oid))
+                if scope['method'] not in ('GET','HEAD','OPTIONS'):
+                    headers=dict(scope.get('headers',[]))
+                    origin=headers.get(b'origin',b'').decode()
+                    expected=os.getenv('BILLING_PUBLIC_URL','').rstrip('/')
+                    if not expected or origin != expected:
+                        return await JSONResponse({'detail':'Invalid request origin'},status_code=403)(scope,receive,send)
             await self.app(scope,receive,send)
         finally:
             WORKSPACE.reset(token)
