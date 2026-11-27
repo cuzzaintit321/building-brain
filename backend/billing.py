@@ -1,9 +1,9 @@
 """Single-workspace Stripe billing pilot. Not public SaaS onboarding."""
-import os, secrets, time, hmac, hashlib, json
+import os, secrets, time, hmac, hashlib, json, sqlite3
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from .main import auth, db, WORKSPACE, REGISTRY
+from .main import auth, db, WORKSPACE, REGISTRY, DATA
 
 router = APIRouter(prefix="/api/billing")
 PLANS = {"starter": (99, 990), "professional": (299, 2990), "enterprise": (799, 7990)}
@@ -156,11 +156,28 @@ async def webhook(request: Request):
         "invoice.paid", "invoice.payment_failed"
     }:
         return {"received": True, "ignored": True}
-    initialize()
-    with db() as c:
-        customer = c.execute("SELECT customer FROM billing_workspace WHERE id=1").fetchone()[0]
-        if not customer or obj.get("customer") != customer:
-            return {"received": True, "ignored": True}
-        c.execute("CREATE TABLE IF NOT EXISTS billing_events (event_id TEXT PRIMARY KEY, kind TEXT NOT NULL, received_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-        result = c.execute("INSERT OR IGNORE INTO billing_events(event_id,kind) VALUES(?,?)", (event_id,kind))
-        return {"received": True, "duplicate": result.rowcount == 0}
+    # Stripe delivers account-wide events. Route only to a known customer.
+    customer = obj.get("customer")
+    if not isinstance(customer, str):
+        return {"received": True, "ignored": True}
+    with REGISTRY.connect() as c:
+        ids = [row[0] for row in c.execute("SELECT id FROM organizations")]
+    candidates = [None] + [DATA/"identity"/"workspaces"/oid for oid in ids]
+    for workspace in candidates:
+        path = (workspace or DATA)/"buildingbrain.db"
+        if not path.is_file():
+            continue
+        token = WORKSPACE.set(workspace)
+        try:
+            with db() as c:
+                if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='billing_workspace'").fetchone():
+                    continue
+                known = c.execute("SELECT customer FROM billing_workspace WHERE id=1").fetchone()
+                if not known or known[0] != customer:
+                    continue
+                c.execute("CREATE TABLE IF NOT EXISTS billing_events (event_id TEXT PRIMARY KEY, kind TEXT NOT NULL, received_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+                result = c.execute("INSERT OR IGNORE INTO billing_events(event_id,kind) VALUES(?,?)", (event_id,kind))
+                return {"received": True, "duplicate": result.rowcount == 0}
+        finally:
+            WORKSPACE.reset(token)
+    return {"received": True, "ignored": True}
