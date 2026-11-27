@@ -9,3 +9,7 @@ Audit all property, asset, work order, preventive maintenance, document, note, p
 Before public signup: add verified email, login rate limiting, session revocation, password reset, invitations, CSRF defenses, tenant-specific billing, entitlement checks and end-to-end cross-tenant tests. Keep Stripe in test mode until these gates pass.
 
 Run the foundation tests with python -m unittest discover -s tests -p 'test_organizations.py'. Tests are not evidence of isolation in the legacy API.
+
+## Storage refactor
+
+Database connections and upload paths now resolve through a request-local ContextVar. Workspace initialization supports disabling demo records. Middleware rejects tenant sessions until authorization and billing integration are ready; legacy admin behavior remains. Storage separation tests cover two independent databases and upload paths, not end-to-end tenant access. Run all tests with `python -m unittest discover -s tests`.
