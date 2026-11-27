@@ -109,6 +109,8 @@ class WorkspaceMiddleware:
                     return await JSONResponse({'detail':'Tenant sessions are not enabled'},status_code=403)(scope,receive,send)
                 role=REGISTRY.role(uid,oid)
                 path=scope['path']
+                if path == '/api/login' or path == '/api/tenant/login':
+                    return await JSONResponse({'detail':'Sign out before switching accounts'},status_code=403)(scope,receive,send)
                 if path.startswith('/api/billing') or path == '/billing':
                     return await JSONResponse({'detail':'Tenant billing not enabled'},status_code=403)(scope,receive,send)
                 if role != 'owner' and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout':
