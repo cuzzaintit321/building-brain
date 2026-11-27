@@ -30,3 +30,19 @@ class WorkspaceStorageTests(unittest.TestCase):
                     main.WORKSPACE.reset(token)
             self.assertNotEqual(paths[0]/"buildingbrain.db",paths[1]/"buildingbrain.db")
             self.assertEqual(main.database_path(),main.DB)
+
+    def test_quota(self):
+        from fastapi import HTTPException
+        with tempfile.TemporaryDirectory() as root:
+            token=main.WORKSPACE.set(Path(root))
+            try:
+                main.init(seed_demo=False)
+                with main.db() as c:
+                    main.enforce_quota(c,"properties",1)
+                    c.execute("INSERT INTO properties(name) VALUES(?)",("First",))
+                with self.assertRaises(HTTPException) as exc:
+                    with main.db() as c:
+                        main.enforce_quota(c,"properties",1)
+                self.assertEqual(exc.exception.status_code,409)
+            finally:
+                main.WORKSPACE.reset(token)
