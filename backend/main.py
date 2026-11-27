@@ -193,10 +193,6 @@ def create_property(x:Property):
     limit=resource_limit('properties')
     with db() as c:
         enforce_quota(c,'properties',limit)
-        if WORKSPACE.get() and os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()=='true':
-            from .billing import enforce_quota
-            c.execute('BEGIN IMMEDIATE')
-            enforce_quota(c,'properties',ACTIVE_PLAN.get())
         r=c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',(x.name,x.address,x.notes));return {'id':r.lastrowid}
 
 class PropertyLocation(BaseModel):
@@ -222,10 +218,6 @@ def create_asset(x:Asset):
     limit=resource_limit('assets')
     with db() as c:
         enforce_quota(c,'assets',limit)
-        if WORKSPACE.get() and os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()=='true':
-            from .billing import enforce_quota
-            c.execute('BEGIN IMMEDIATE')
-            enforce_quota(c,'assets',ACTIVE_PLAN.get())
         r=c.execute('INSERT INTO assets(property_id,name,category,location,manufacturer,model,serial,status,notes,warranty_expires) VALUES(?,?,?,?,?,?,?,?,?,?)',tuple(getattr(x,k) for k in ('property_id','name','category','location','manufacturer','model','serial','status','notes','warranty_expires')))
         return {'id':r.lastrowid}
 @app.put('/api/assets/{aid}',dependencies=[Depends(auth)])
@@ -665,11 +657,11 @@ def allow_attempt(ip,path):
 def resource_limit(resource):
     if WORKSPACE.get() is None or os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()!='true':
         return None
-    from .billing import active_plan
-    plan=active_plan()
+    from .billing import LIMITS
+    plan=ACTIVE_PLAN.get()
     if not plan:
         raise HTTPException(402,'Active subscription required')
-    raw=os.getenv('LIMIT_'+plan.upper()+'_'+resource.upper(),'')
+    raw=os.getenv('LIMIT_'+plan.upper()+'_'+resource.upper(),str(LIMITS[plan][resource]))
     if not raw.isdecimal() or int(raw)<1:
         raise HTTPException(503,'Plan resource limit not configured')
     return int(raw)
