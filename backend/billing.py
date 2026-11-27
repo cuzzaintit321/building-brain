@@ -181,3 +181,19 @@ async def webhook(request: Request):
         finally:
             WORKSPACE.reset(token)
     return {"received": True, "ignored": True}
+
+
+def entitlement():
+    # Fail closed on missing configuration, unknown prices or Stripe failures.
+    try:
+        require_pilot()
+        initialize()
+        with db() as c:
+            customer=c.execute("SELECT customer FROM billing_workspace WHERE id=1").fetchone()[0]
+        if not customer:
+            return False
+        result=stripe("GET","subscriptions?customer="+customer+"&status=all&limit=100")
+        allowed={v for v in price_map().values() if v}
+        return any(s["status"] in ("active","trialing") and len(s["items"]["data"])==1 and s["items"]["data"][0]["price"]["id"] in allowed for s in result["data"])
+    except (HTTPException,KeyError,TypeError):
+        return False
