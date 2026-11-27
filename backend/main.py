@@ -20,6 +20,7 @@ DATA.mkdir(parents=True,exist_ok=True)
 UPLOADS=DATA/'uploads';UPLOADS.mkdir(exist_ok=True)
 DB=DATA/'buildingbrain.db'
 WORKSPACE=ContextVar('workspace', default=None)
+ACTIVE_PLAN=ContextVar('active_plan',default=None)
 REGISTRY=Registry(DATA/'identity')
 def database_path():
     workspace=WORKSPACE.get()
@@ -103,6 +104,7 @@ class WorkspaceMiddleware:
         session=scope.get('session',{})
         uid,oid=session.get('user_id'),session.get('organization_id')
         token=WORKSPACE.set(None)
+        plan_token=ACTIVE_PLAN.set(None)
         try:
             if scope['method']=='POST' and scope['path'] in ('/api/login','/api/tenant/login','/api/accounts/verification','/api/accounts/recovery','/api/accounts/register','/api/accounts/reset','/api/tenant/invitations/accept'):
                 client=scope.get('client') or ('unknown',0)
@@ -127,8 +129,10 @@ class WorkspaceMiddleware:
                     return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
                 WORKSPACE.set(REGISTRY.workspace(uid,oid))
                 if os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()=='true' and path.startswith('/api/') and not path.startswith(('/api/billing/','/api/session','/api/logout')):
-                    from .billing import entitlement
-                    if not await run_in_threadpool(entitlement):
+                    from .billing import current_plan
+                    plan=await run_in_threadpool(current_plan)
+                    ACTIVE_PLAN.set(plan)
+                    if not plan:
                         return await JSONResponse({'detail':'Active subscription required'},status_code=402)(scope,receive,send)
                 if os.getenv('TENANT_SUBSCRIPTION_REQUIRED','false').lower()=='true' and path.startswith('/api/') and not path.startswith(('/api/billing/','/api/tenant/')) and path not in ('/api/session','/api/logout'):
                     from starlette.concurrency import run_in_threadpool
@@ -148,6 +152,7 @@ class WorkspaceMiddleware:
             await self.app(scope,receive,send)
         finally:
             WORKSPACE.reset(token)
+            ACTIVE_PLAN.reset(plan_token)
 
 # Starlette adds middleware in reverse order; session middleware must be outermost.
 app.add_middleware(WorkspaceMiddleware)
@@ -188,6 +193,10 @@ def create_property(x:Property):
     limit=resource_limit('properties')
     with db() as c:
         enforce_quota(c,'properties',limit)
+        if WORKSPACE.get() and os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()=='true':
+            from .billing import enforce_quota
+            c.execute('BEGIN IMMEDIATE')
+            enforce_quota(c,'properties',ACTIVE_PLAN.get())
         r=c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',(x.name,x.address,x.notes));return {'id':r.lastrowid}
 
 class PropertyLocation(BaseModel):
@@ -213,6 +222,10 @@ def create_asset(x:Asset):
     limit=resource_limit('assets')
     with db() as c:
         enforce_quota(c,'assets',limit)
+        if WORKSPACE.get() and os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()=='true':
+            from .billing import enforce_quota
+            c.execute('BEGIN IMMEDIATE')
+            enforce_quota(c,'assets',ACTIVE_PLAN.get())
         r=c.execute('INSERT INTO assets(property_id,name,category,location,manufacturer,model,serial,status,notes,warranty_expires) VALUES(?,?,?,?,?,?,?,?,?,?)',tuple(getattr(x,k) for k in ('property_id','name','category','location','manufacturer','model','serial','status','notes','warranty_expires')))
         return {'id':r.lastrowid}
 @app.put('/api/assets/{aid}',dependencies=[Depends(auth)])
