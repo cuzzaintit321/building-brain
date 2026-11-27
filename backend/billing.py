@@ -183,7 +183,7 @@ async def webhook(request: Request):
     return {"received": True, "ignored": True}
 
 
-def entitlement():
+def active_plan():
     # Fail closed on missing configuration, unknown prices or Stripe failures.
     try:
         require_pilot()
@@ -194,6 +194,10 @@ def entitlement():
             return False
         result=stripe("GET","subscriptions?customer="+customer+"&status=all&limit=100")
         allowed={v for v in price_map().values() if v}
-        return any(s["status"] in ("active","trialing") and len(s["items"]["data"])==1 and s["items"]["data"][0]["price"]["id"] in allowed for s in result["data"])
+        matches={key.split(':')[0] for key,value in price_map().items() if value and any(s['status'] in ('active','trialing') and len(s['items']['data'])==1 and s['items']['data'][0]['price']['id']==value for s in result['data'])}
+        return next(iter(matches)) if len(matches)==1 and not result.get('has_more') else None
     except (HTTPException,KeyError,TypeError):
         return False
+
+def entitlement():
+    return bool(active_plan())
