@@ -81,3 +81,44 @@ class Registry:
         path = self.root / "workspaces" / organization_id
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         return path
+
+    def invite(self, actor, organization_id, email, role):
+        if role not in ("admin","member","viewer"):
+            raise ValueError("Invalid role")
+        email=email.strip().casefold()
+        if not 3 <= len(email) <= 254 or "@" not in email:
+            raise ValueError("Invalid email")
+        token=secrets.token_urlsafe(32)
+        digest=hashlib.sha256(token.encode()).hexdigest()
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            membership=c.execute("SELECT role FROM memberships WHERE user_id=? AND organization_id=?",(actor,organization_id)).fetchone()
+            if not membership or membership["role"]!="owner":
+                raise PermissionError("Owner permission required")
+            c.execute("""CREATE TABLE IF NOT EXISTS invitations (
+                digest TEXT PRIMARY KEY, organization_id TEXT NOT NULL REFERENCES organizations(id),
+                email TEXT NOT NULL, role TEXT NOT NULL, expires INTEGER NOT NULL
+            )""")
+            c.execute("INSERT INTO invitations VALUES (?,?,?,?,strftime('%s','now')+86400)",(digest,organization_id,email,role))
+        return token
+
+    def accept_invitation(self, token, password):
+        if not 12 <= len(password) <= 256:
+            raise ValueError("Invalid password length")
+        digest=hashlib.sha256(token.encode()).hexdigest()
+        salt=secrets.token_hex(16)
+        hashed=self.password_hash(password,salt)
+        uid=uuid.uuid4().hex
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("""CREATE TABLE IF NOT EXISTS invitations (
+                digest TEXT PRIMARY KEY, organization_id TEXT NOT NULL REFERENCES organizations(id),
+                email TEXT NOT NULL, role TEXT NOT NULL, expires INTEGER NOT NULL
+            )""")
+            invite=c.execute("SELECT * FROM invitations WHERE digest=? AND expires>strftime('%s','now')",(digest,)).fetchone()
+            if not invite:
+                raise ValueError("Invalid or expired invitation")
+            c.execute("INSERT INTO users VALUES (?,?,?,?)",(uid,invite["email"],salt,hashed))
+            c.execute("INSERT INTO memberships VALUES (?,?,?)",(invite["organization_id"],uid,invite["role"]))
+            c.execute("DELETE FROM invitations WHERE digest=?",(digest,))
+        return invite["organization_id"],uid
