@@ -2,6 +2,8 @@ import os, sqlite3, secrets, hashlib, hmac, re, io, json, datetime, pathlib
 from contextlib import contextmanager
 from contextvars import ContextVar
 from .organizations import Registry
+from starlette.concurrency import run_in_threadpool
+import time
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, JSONResponse
@@ -102,6 +104,10 @@ class WorkspaceMiddleware:
         uid,oid=session.get('user_id'),session.get('organization_id')
         token=WORKSPACE.set(None)
         try:
+            if scope['method']=='POST' and scope['path'] in ('/api/login','/api/tenant/login','/api/accounts/verification','/api/accounts/recovery','/api/accounts/register','/api/accounts/reset','/api/tenant/invitations/accept'):
+                client=scope.get('client') or ('unknown',0)
+                if not await run_in_threadpool(allow_attempt,client[0],scope['path']):
+                    return await JSONResponse({'detail':'Too many attempts'},status_code=429)(scope,receive,send)
             if uid or oid:
                 if scope['path'] == '/api/logout':
                     return await self.app(scope,receive,send)
@@ -109,6 +115,8 @@ class WorkspaceMiddleware:
                     return await JSONResponse({'detail':'Organization access denied'},status_code=403)(scope,receive,send)
                 if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
                     return await JSONResponse({'detail':'Tenant sessions are not enabled'},status_code=403)(scope,receive,send)
+                if not valid_session(uid,session.get('credential_version')):
+                    return await JSONResponse({'detail':'Sign in again'},status_code=401)(scope,receive,send)
                 role=REGISTRY.role(uid,oid)
                 path=scope['path']
                 if path == '/api/login' or path == '/api/tenant/login':
@@ -118,6 +126,10 @@ class WorkspaceMiddleware:
                 if role not in ('owner','admin') and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout' and not (role == 'member' and path.startswith(('/api/orders','/api/pm','/api/notes','/api/ask'))):
                     return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
                 WORKSPACE.set(REGISTRY.workspace(uid,oid))
+                if os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()=='true' and path.startswith('/api/') and not path.startswith(('/api/billing/','/api/session','/api/logout')):
+                    from .billing import entitlement
+                    if not await run_in_threadpool(entitlement):
+                        return await JSONResponse({'detail':'Active subscription required'},status_code=402)(scope,receive,send)
                 if os.getenv('TENANT_SUBSCRIPTION_REQUIRED','false').lower()=='true' and path.startswith('/api/') and not path.startswith(('/api/billing/','/api/tenant/')) and path not in ('/api/session','/api/logout'):
                     from starlette.concurrency import run_in_threadpool
                     from .entitlements import active_plan
@@ -466,7 +478,7 @@ def tenant_login(x:TenantLogin, request:Request):
     finally:
         WORKSPACE.reset(token)
     request.session.clear()
-    request.session.update({'authenticated':True,'user_id':uid,'organization_id':x.organization_id})
+    request.session.update({'authenticated':True,'user_id':uid,'organization_id':x.organization_id,'credential_version':credential_version(uid)})
     return {'ok':True}
 
 @app.get('/tenant-login')
@@ -611,3 +623,23 @@ def reset_password(x:Recovery):
 def registration_page():
     public_accounts()
     return FileResponse(ROOT/'static'/'register.html')
+
+
+def credential_version(uid):
+    with REGISTRY.connect() as c:
+        row=c.execute("SELECT password_hash FROM users WHERE id=?",(uid,)).fetchone()
+    return hmac.new(SECRET.encode(),row[0].encode(),hashlib.sha256).hexdigest() if row else None
+
+def valid_session(uid,version):
+    current=credential_version(uid)
+    return bool(current and isinstance(version,str) and hmac.compare_digest(current,version))
+
+def allow_attempt(ip,path):
+    now=int(time.time())
+    key=hashlib.sha256((ip+":"+path).encode()).hexdigest()
+    with REGISTRY.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("CREATE TABLE IF NOT EXISTS auth_attempts (key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL)")
+        c.execute("DELETE FROM auth_attempts WHERE window<?",(now//900-1,))
+        c.execute("INSERT INTO auth_attempts VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN window=excluded.window THEN count+1 ELSE 1 END,window=excluded.window",(key,now//900))
+        return c.execute("SELECT count FROM auth_attempts WHERE key=?",(key,)).fetchone()[0]<=10
