@@ -1,5 +1,9 @@
 import os, sqlite3, secrets, hashlib, hmac, re, io, json, datetime, pathlib
 from contextlib import contextmanager
+from contextvars import ContextVar
+from .organizations import Registry
+from starlette.concurrency import run_in_threadpool
+import time
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,6 +19,17 @@ DATA = pathlib.Path(os.environ.get('DATA_DIR',str(ROOT/'data')))
 DATA.mkdir(parents=True,exist_ok=True)
 UPLOADS=DATA/'uploads';UPLOADS.mkdir(exist_ok=True)
 DB=DATA/'buildingbrain.db'
+WORKSPACE=ContextVar('workspace', default=None)
+ACTIVE_PLAN=ContextVar('active_plan',default=None)
+REGISTRY=Registry(DATA/'identity')
+def database_path():
+    workspace=WORKSPACE.get()
+    return workspace/'buildingbrain.db' if workspace else DB
+def uploads_path():
+    workspace=WORKSPACE.get()
+    path=workspace/'uploads' if workspace else UPLOADS
+    path.mkdir(mode=0o700, exist_ok=True)
+    return path
 SECRET=os.environ.get('SECRET_KEY','')
 PASSWORD=os.environ.get('ADMIN_PASSWORD','')
 if not SECRET or not PASSWORD:
@@ -26,7 +41,7 @@ app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 def today():return datetime.date.today().isoformat()
 @contextmanager
 def db():
-    c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA busy_timeout=10000')
+    c=sqlite3.connect(database_path(),timeout=15);c.row_factory=sqlite3.Row;c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA busy_timeout=10000')
     try:yield c;c.commit()
     finally:c.close()
 def query(sql,args=(),one=False):
@@ -40,7 +55,7 @@ def row(sql,args=()):
     with db() as c:
         r=c.execute(sql,args).fetchone();return dict(r) if r else None
 
-def init():
+def init(seed_demo=True):
     with db() as c:
         c.executescript('''
         PRAGMA journal_mode=WAL;
@@ -66,7 +81,7 @@ def init():
         for name, definition in [('latitude','REAL'),('longitude','REAL'),('geofence_radius','INTEGER NOT NULL DEFAULT 100')]:
             if name not in columns:
                 c.execute(f'ALTER TABLE properties ADD COLUMN {name} {definition}')
-        if c.execute('SELECT COUNT(*) FROM properties').fetchone()[0]==0:
+        if seed_demo and c.execute('SELECT COUNT(*) FROM properties').fetchone()[0]==0:
             c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',('Demo Property','Sample property — replace with your own','Demonstration records only. No equipment locations or safety procedures are verified.'))
             pid=c.execute('SELECT last_insert_rowid()').fetchone()[0]
             c.execute('INSERT INTO assets(property_id,name,category,location,manufacturer,model,status,notes) VALUES(?,?,?,?,?,?,?,?)',(pid,'Rooftop Air Handler RTU-1','HVAC','Roof — demo location','','','Operational','Demo asset; verify all details onsite.'))
@@ -77,6 +92,72 @@ init()
 
 def auth(request:Request):
     if request.session.get('authenticated') is not True:raise HTTPException(401,'Sign in required')
+
+# Resolve tenant context before any application handler runs. Tenant login is
+# deliberately not exposed until role and billing enforcement are complete.
+class WorkspaceMiddleware:
+    def __init__(self, app):
+        self.app=app
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            return await self.app(scope,receive,send)
+        session=scope.get('session',{})
+        uid,oid=session.get('user_id'),session.get('organization_id')
+        token=WORKSPACE.set(None)
+        plan_token=ACTIVE_PLAN.set(None)
+        try:
+            if scope['method']=='POST' and scope['path'] in ('/api/login','/api/tenant/login','/api/accounts/verification','/api/accounts/recovery','/api/accounts/register','/api/accounts/reset','/api/tenant/invitations/accept'):
+                client=scope.get('client') or ('unknown',0)
+                if not await run_in_threadpool(allow_attempt,client[0],scope['path']):
+                    return await JSONResponse({'detail':'Too many attempts'},status_code=429)(scope,receive,send)
+            if uid or oid:
+                if scope['path'] == '/api/logout':
+                    return await self.app(scope,receive,send)
+                if not uid or not oid or not REGISTRY.role(uid,oid):
+                    return await JSONResponse({'detail':'Organization access denied'},status_code=403)(scope,receive,send)
+                if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
+                    return await JSONResponse({'detail':'Tenant sessions are not enabled'},status_code=403)(scope,receive,send)
+                if not valid_session(uid,session.get('credential_version')):
+                    return await JSONResponse({'detail':'Sign in again'},status_code=401)(scope,receive,send)
+                role=REGISTRY.role(uid,oid)
+                path=scope['path']
+                if path == '/api/login' or path == '/api/tenant/login':
+                    return await JSONResponse({'detail':'Sign out before switching accounts'},status_code=403)(scope,receive,send)
+                if (path.startswith('/api/billing') or path == '/billing') and role != 'owner':
+                    return await JSONResponse({'detail':'Company owner required'},status_code=403)(scope,receive,send)
+                if role not in ('owner','admin') and scope['method'] not in ('GET','HEAD','OPTIONS') and path != '/api/logout' and not (role == 'member' and path.startswith(('/api/orders','/api/pm','/api/notes','/api/ask'))):
+                    return await JSONResponse({'detail':'Owner permission required'},status_code=403)(scope,receive,send)
+                WORKSPACE.set(REGISTRY.workspace(uid,oid))
+                if os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()=='true' and path.startswith('/api/') and not path.startswith(('/api/billing/','/api/session','/api/logout')):
+                    from .billing import current_plan
+                    plan=await run_in_threadpool(current_plan)
+                    ACTIVE_PLAN.set(plan)
+                    if not plan:
+                        return await JSONResponse({'detail':'Active subscription required'},status_code=402)(scope,receive,send)
+                if os.getenv('TENANT_SUBSCRIPTION_REQUIRED','false').lower()=='true' and path.startswith('/api/') and not path.startswith(('/api/billing/','/api/tenant/')) and path not in ('/api/session','/api/logout'):
+                    from starlette.concurrency import run_in_threadpool
+                    from .entitlements import active_plan
+                    try:
+                        plan=await run_in_threadpool(active_plan)
+                    except HTTPException as exc:
+                        return await JSONResponse({'detail':exc.detail},status_code=exc.status_code)(scope,receive,send)
+                    if not plan:
+                        return await JSONResponse({'detail':'Active subscription required'},status_code=402)(scope,receive,send)
+                if scope['method'] not in ('GET','HEAD','OPTIONS'):
+                    headers=dict(scope.get('headers',[]))
+                    origin=headers.get(b'origin',b'').decode()
+                    expected=os.getenv('BILLING_PUBLIC_URL','').rstrip('/')
+                    if not expected or origin != expected:
+                        return await JSONResponse({'detail':'Invalid request origin'},status_code=403)(scope,receive,send)
+            await self.app(scope,receive,send)
+        finally:
+            WORKSPACE.reset(token)
+            ACTIVE_PLAN.reset(plan_token)
+
+# Starlette adds middleware in reverse order; session middleware must be outermost.
+app.add_middleware(WorkspaceMiddleware)
+app.user_middleware.reverse()
+
 
 def owner(sql,identifier):
     r=row(sql,(identifier,))
@@ -109,7 +190,9 @@ class Property(BaseModel):name:str=Field(min_length=1,max_length=140);address:st
 def properties():return rows('SELECT * FROM properties ORDER BY name')
 @app.post('/api/properties',dependencies=[Depends(auth)])
 def create_property(x:Property):
+    limit=resource_limit('properties')
     with db() as c:
+        enforce_quota(c,'properties',limit)
         r=c.execute('INSERT INTO properties(name,address,notes) VALUES(?,?,?)',(x.name,x.address,x.notes));return {'id':r.lastrowid}
 
 class PropertyLocation(BaseModel):
@@ -132,7 +215,9 @@ def assets(property_id:Optional[int]=None):return rows('SELECT * FROM assets WHE
 @app.post('/api/assets',dependencies=[Depends(auth)])
 def create_asset(x:Asset):
     property_exists(x.property_id)
+    limit=resource_limit('assets')
     with db() as c:
+        enforce_quota(c,'assets',limit)
         r=c.execute('INSERT INTO assets(property_id,name,category,location,manufacturer,model,serial,status,notes,warranty_expires) VALUES(?,?,?,?,?,?,?,?,?,?)',tuple(getattr(x,k) for k in ('property_id','name','category','location','manufacturer','model','serial','status','notes','warranty_expires')))
         return {'id':r.lastrowid}
 @app.put('/api/assets/{aid}',dependencies=[Depends(auth)])
@@ -194,18 +279,18 @@ async def upload_doc(property_id:int=Form(...),file:UploadFile=File(...)):
     try:content=extract(data,ext)[:500000]
     except Exception:raise HTTPException(400,'Could not extract text from this file')
     if not content.strip():raise HTTPException(400,'No searchable text found. Scanned PDFs need OCR before upload.')
-    filename=secrets.token_hex(16)+ext;(UPLOADS/filename).write_bytes(data)
+    filename=secrets.token_hex(16)+ext;(uploads_path()/filename).write_bytes(data)
     with db() as c:
         r=c.execute('INSERT INTO documents(property_id,name,filename,content) VALUES(?,?,?,?)',(property_id,name,filename,content))
         return {'id':r.lastrowid,'name':name,'characters':len(content)}
 @app.get('/api/documents/{did}/download',dependencies=[Depends(auth)])
 def download_doc(did:int):
-    x=owner('SELECT * FROM documents WHERE id=?',did);return FileResponse(UPLOADS/x['filename'],filename=x['name'])
+    x=owner('SELECT * FROM documents WHERE id=?',did);return FileResponse(uploads_path()/x['filename'],filename=x['name'])
 @app.delete('/api/documents/{did}',dependencies=[Depends(auth)])
 def delete_doc(did:int):
     x=owner('SELECT * FROM documents WHERE id=?',did)
     with db() as c:c.execute('DELETE FROM documents WHERE id=?',(did,))
-    (UPLOADS/x['filename']).unlink(missing_ok=True)
+    (uploads_path()/x['filename']).unlink(missing_ok=True)
     return {'ok':True}
 
 @app.get('/api/notes',dependencies=[Depends(auth)])
@@ -222,7 +307,7 @@ async def add_note(property_id:int=Form(...),text:str=Form(...),asset_id:Optiona
         data=await photo.read(5*1024*1024+1)
         if len(data)>5*1024*1024:raise HTTPException(413,'Photo max 5 MB')
         if not (data.startswith(b'\xff\xd8') or data.startswith(b'\x89PNG\r\n\x1a\n') or (data[:4]==b'RIFF' and data[8:12]==b'WEBP')):raise HTTPException(400,'Invalid image file')
-        filename=secrets.token_hex(16)+ext;(UPLOADS/filename).write_bytes(data)
+        filename=secrets.token_hex(16)+ext;(uploads_path()/filename).write_bytes(data)
     if not text.strip() and not filename:raise HTTPException(400,'Add a note or a photo')
     with db() as c:
         r=c.execute('INSERT INTO notes(property_id,asset_id,order_id,text,filename) VALUES(?,?,?,?,?)',(property_id,asset_id,order_id,text,filename));return {'id':r.lastrowid}
@@ -230,7 +315,7 @@ async def add_note(property_id:int=Form(...),text:str=Form(...),asset_id:Optiona
 def note_photo(nid:int):
     x=owner('SELECT * FROM notes WHERE id=?',nid)
     if not x['filename']:raise HTTPException(404,'No photo')
-    return FileResponse(UPLOADS/x['filename'])
+    return FileResponse(uploads_path()/x['filename'])
 
 @app.get('/api/dashboard',dependencies=[Depends(auth)])
 def dashboard(property_id:int):
@@ -373,3 +458,219 @@ async def ask(x:Question):
         except Exception:pass
     answer='Relevant records found (source excerpts; AI synthesis unavailable):\n\n'+'\n\n'.join(f"[{i+1}] {s['label']}: {s['excerpt']}" for i,s in enumerate(found[:5]))+'\n\nVerify these details against current building records before taking action.'
     return {'answer':answer,'sources':found,'mode':'evidence'}
+
+
+# Billing pilot routes are authenticated by the existing workspace session.
+from .billing import router as billing_router
+app.include_router(billing_router)
+
+@app.get('/billing', dependencies=[Depends(auth)])
+def billing_page():
+    return FileResponse(ROOT/'static'/'billing.html')
+
+
+class TenantLogin(BaseModel):
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=256)
+    organization_id: str = Field(max_length=32)
+
+@app.post('/api/tenant/login')
+def tenant_login(x:TenantLogin, request:Request):
+    if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
+        raise HTTPException(404,'Not found')
+    uid=REGISTRY.authenticate(x.email,x.password)
+    if not uid or not REGISTRY.role(uid,x.organization_id):
+        raise HTTPException(401,'Invalid credentials or membership')
+    token=WORKSPACE.set(REGISTRY.workspace(uid,x.organization_id))
+    try:
+        init(seed_demo=False)
+    finally:
+        WORKSPACE.reset(token)
+    request.session.clear()
+    request.session.update({'authenticated':True,'user_id':uid,'organization_id':x.organization_id,'credential_version':credential_version(uid)})
+    return {'ok':True}
+
+@app.get('/tenant-login')
+def tenant_login_page():
+    if os.getenv('TENANT_PILOT_ENABLED','false').lower() != 'true':
+        raise HTTPException(404,'Not found')
+    return FileResponse(ROOT/'static'/'tenant-login.html')
+
+
+class InvitationIn(BaseModel):
+    email: str = Field(max_length=254)
+    role: str = Field(max_length=16)
+
+class InvitationAccept(BaseModel):
+    token: str = Field(max_length=128)
+    password: str = Field(min_length=12,max_length=256)
+
+@app.post('/api/tenant/invitations',dependencies=[Depends(auth)])
+def invite_employee(x:InvitationIn,request:Request):
+    uid,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not uid or not oid:
+        raise HTTPException(403,'Company owner required')
+    try:
+        token=REGISTRY.invite(uid,oid,x.email,x.role)
+    except PermissionError:
+        raise HTTPException(403,'Company owner required')
+    except ValueError:
+        raise HTTPException(422,'Invalid invitation')
+    return {'token':token,'expires_in_seconds':86400}
+
+@app.post('/api/tenant/invitations/accept')
+def accept_employee(x:InvitationAccept,request:Request):
+    if os.getenv('TENANT_PILOT_ENABLED','false').lower()!='true':
+        raise HTTPException(404,'Not found')
+    if request.session.get('authenticated'):
+        raise HTTPException(409,'Sign out before accepting an invitation')
+    try:
+        oid,uid=REGISTRY.accept_invitation(x.token,x.password)
+    except (ValueError,sqlite3.IntegrityError):
+        raise HTTPException(400,'Invitation unavailable')
+    return {'organization_id':oid,'ok':True}
+
+
+@app.get('/api/tenant/employees',dependencies=[Depends(auth)])
+def employees(request:Request):
+    uid,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not uid or REGISTRY.role(uid,oid) not in ('owner','admin'):
+        raise HTTPException(403,'Company administrator required')
+    with REGISTRY.connect() as c:
+        return [dict(x) for x in c.execute("SELECT u.id,u.email,m.role FROM users u JOIN memberships m ON u.id=m.user_id WHERE m.organization_id=? ORDER BY u.email",(oid,))]
+
+@app.get('/employees',dependencies=[Depends(auth)])
+def employees_page(request:Request):
+    if REGISTRY.role(request.session.get('user_id'),request.session.get('organization_id')) not in ('owner','admin'):
+        raise HTTPException(403,'Company administrator required')
+    return FileResponse(ROOT/'static'/'employees.html')
+
+class EmployeeRole(BaseModel):
+    role:str
+
+@app.put('/api/tenant/employees/{uid}',dependencies=[Depends(auth)])
+def employee_role(uid:str,x:EmployeeRole,request:Request):
+    actor,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not actor or REGISTRY.role(actor,oid)!='owner' or x.role not in ('admin','member','viewer'):
+        raise HTTPException(403,'Company owner required')
+    with REGISTRY.connect() as c:
+        result=c.execute("UPDATE memberships SET role=? WHERE organization_id=? AND user_id=? AND role!='owner'",(x.role,oid,uid))
+        if not result.rowcount:
+            raise HTTPException(404,'Employee not found')
+    return {'ok':True}
+
+@app.delete('/api/tenant/employees/{uid}',dependencies=[Depends(auth)])
+def remove_employee(uid:str,request:Request):
+    actor,oid=request.session.get('user_id'),request.session.get('organization_id')
+    if not actor or REGISTRY.role(actor,oid)!='owner':
+        raise HTTPException(403,'Company owner required')
+    with REGISTRY.connect() as c:
+        result=c.execute("DELETE FROM memberships WHERE organization_id=? AND user_id=? AND role!='owner'",(oid,uid))
+        if not result.rowcount:
+            raise HTTPException(404,'Employee not found')
+    return {'ok':True}
+
+
+from .account_mail import send_token, consume
+
+class AccountEmail(BaseModel):
+    email:str=Field(max_length=254)
+
+class Registration(AccountEmail):
+    name:str=Field(min_length=1,max_length=140)
+    password:str=Field(min_length=12,max_length=256)
+    token:str=Field(max_length=128)
+
+class Recovery(AccountEmail):
+    password:str=Field(min_length=12,max_length=256)
+    token:str=Field(max_length=128)
+
+def public_accounts():
+    if os.getenv('PUBLIC_ACCOUNTS_ENABLED','false').lower()!='true':
+        raise HTTPException(404,'Not found')
+
+@app.post('/api/accounts/verification')
+def verification(x:AccountEmail):
+    public_accounts()
+    send_token(REGISTRY,x.email,'verification')
+    return {'ok':True}
+
+@app.post('/api/accounts/register')
+def register(x:Registration):
+    public_accounts()
+    try:
+        with REGISTRY.connect() as c:
+            consume(c,x.email,'verification',x.token)
+        oid,uid=REGISTRY.create_organization(x.name,x.email,x.password)
+    except (ValueError,sqlite3.IntegrityError,sqlite3.OperationalError):
+        raise HTTPException(400,'Registration unavailable')
+    return {'organization_id':oid}
+
+@app.post('/api/accounts/recovery')
+def recovery(x:AccountEmail):
+    public_accounts()
+    with REGISTRY.connect() as c:
+        exists=c.execute("SELECT 1 FROM users WHERE email=?",(x.email.strip().casefold(),)).fetchone()
+    if exists:
+        send_token(REGISTRY,x.email,'recovery')
+    return {'ok':True}
+
+@app.post('/api/accounts/reset')
+def reset_password(x:Recovery):
+    public_accounts()
+    salt=secrets.token_hex(16)
+    digest=REGISTRY.password_hash(x.password,salt)
+    try:
+        with REGISTRY.connect() as c:
+            consume(c,x.email,'recovery',x.token)
+            c.execute("UPDATE users SET salt=?,password_hash=? WHERE email=?",(salt,digest,x.email.strip().casefold()))
+    except (ValueError,sqlite3.OperationalError):
+        raise HTTPException(400,'Invalid or expired code')
+    return {'ok':True}
+
+@app.get('/register')
+def registration_page():
+    public_accounts()
+    return FileResponse(ROOT/'static'/'register.html')
+
+
+def credential_version(uid):
+    with REGISTRY.connect() as c:
+        row=c.execute("SELECT password_hash FROM users WHERE id=?",(uid,)).fetchone()
+    return hmac.new(SECRET.encode(),row[0].encode(),hashlib.sha256).hexdigest() if row else None
+
+def valid_session(uid,version):
+    current=credential_version(uid)
+    return bool(current and isinstance(version,str) and hmac.compare_digest(current,version))
+
+def allow_attempt(ip,path):
+    now=int(time.time())
+    key=hashlib.sha256((ip+":"+path).encode()).hexdigest()
+    with REGISTRY.connect() as c:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("CREATE TABLE IF NOT EXISTS auth_attempts (key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL)")
+        c.execute("DELETE FROM auth_attempts WHERE window<?",(now//900-1,))
+        c.execute("INSERT INTO auth_attempts VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN window=excluded.window THEN count+1 ELSE 1 END,window=excluded.window",(key,now//900))
+        return c.execute("SELECT count FROM auth_attempts WHERE key=?",(key,)).fetchone()[0]<=10
+
+
+def resource_limit(resource):
+    if WORKSPACE.get() is None or os.getenv('SUBSCRIPTION_ENFORCEMENT','false').lower()!='true':
+        return None
+    from .billing import LIMITS
+    plan=ACTIVE_PLAN.get()
+    if not plan:
+        raise HTTPException(402,'Active subscription required')
+    raw=os.getenv('LIMIT_'+plan.upper()+'_'+resource.upper(),str(LIMITS[plan][resource]))
+    if not raw.isdecimal() or int(raw)<1:
+        raise HTTPException(503,'Plan resource limit not configured')
+    return int(raw)
+
+def enforce_quota(c,resource,limit):
+    if limit is None:
+        return
+    if resource not in ('properties','assets'):
+        raise ValueError('Unknown resource')
+    c.execute('BEGIN IMMEDIATE')
+    if c.execute('SELECT COUNT(*) FROM '+resource).fetchone()[0]>=limit:
+        raise HTTPException(409,'Plan resource limit reached')
